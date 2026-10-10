@@ -1,0 +1,15 @@
+# Python-Umgebungen und Caches
+.venv*/
+__pycache__/
+*.pyc
+
+# Heruntergeladene Modelle (werden von install.ps1 geladen)
+models/
+
+# Eigene Songs, Logs und persönliche Einstellungen
+songs/
+install.log
+user_settings.json
+
+# Lokale Editor-/Tool-Konfiguration
+.claude/
