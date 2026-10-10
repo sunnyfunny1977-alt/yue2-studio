@@ -331,7 +331,8 @@ def build_ui():
                         with gr.Column(scale=3, min_width=220):
                             with gr.Row():
                                 model_dd = tr(gr.Dropdown(models, value=model_value, label=t("model.label"),
-                                                          scale=5, min_width=160), label="model.label")
+                                                          scale=5, min_width=160, elem_id="model-dd"),
+                                              label="model.label")
                                 refresh_btn = gr.Button("↻", scale=0, min_width=46, elem_classes="icon-btn")
 
                     # --- Neuer Song

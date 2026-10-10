@@ -116,8 +116,11 @@ footer { display: none !important; }
 .chip.accent { background: rgba(139,92,246,.16); border-color: rgba(139,92,246,.35); color: #ddd6fe; }
 
 /* ---------- Karten & Schritte ---------- */
-.card { background: rgba(16,16,30,.62) !important; border: 1px solid rgba(255,255,255,.08) !important;
-  border-radius: 22px !important; padding: 20px 22px 22px !important; backdrop-filter: blur(16px);
+/* Kein backdrop-filter auf Karten: er macht die Karte zum Bezugsrahmen für position:fixed und
+   verschiebt dadurch Gradios Dropdown-Listen nach unten. Stattdessen ein deckenderer Hintergrund. */
+.card { background: linear-gradient(180deg, rgba(20,20,36,.86), rgba(14,14,26,.86)) !important;
+  border: 1px solid rgba(255,255,255,.08) !important;
+  border-radius: 22px !important; padding: 20px 22px 22px !important;
   box-shadow: 0 24px 60px -36px rgba(0,0,0,.9); }
 .card .form, .card .gr-form { background: transparent !important; border: none !important; box-shadow: none !important;
   gap: 12px !important; }
@@ -154,6 +157,9 @@ footer { display: none !important; }
 @keyframes shine { 0%,100% { background-position: 0% 50% } 50% { background-position: 100% 50% } }
 .create-btn { min-height: 52px; font-size: 15.5px !important; font-weight: 700 !important; }
 .ghost-btn { font-weight: 600 !important; }
+/* Lange Ollama-Modellnamen nicht mehrfach umbrechen: Liste und Einträge breiter als das Feld */
+#model-dd ul.options { min-width: 380px !important; }
+#model-dd ul.options li { width: auto !important; }
 .icon-btn { min-width: 46px !important; max-width: 46px !important; font-size: 18px !important; }
 
 /* ---------- Fortschritt ---------- */
