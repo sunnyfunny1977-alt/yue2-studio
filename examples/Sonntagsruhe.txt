@@ -1,0 +1,93 @@
+Titel:            Sonntagsruhe
+Datei(en):        Sonntagsruhe.mp3, Sonntagsruhe.flac
+Gespeichert am:   2026-10-10 13:09:06
+Erstellt am:      2026-10-10 13:08:42
+Modus:            Neuen Song generieren
+Songlänge:        0:56 min (55.9 s)
+Format:           MP3 – 48 kHz Stereo – 320 kbit/s | FLAC – 48 kHz Stereo – 24 Bit
+
+=== Generierung (YuE2) ===
+YuE2-Modell:      m-a-p/YuE2-3B
+VAE:              m-a-p/YuE2-Vae
+CoT-Modus:        full
+Seed:             506535149
+CFG-Scale:        Standard (1.0)
+Max. Tokens:      3750 (≈ 150 s)
+Abgeschnitten:    Partitur: nein, Song: nein
+Rechenzeit:       40 s
+
+=== Texterstellung (Ollama) ===
+Ollama-Modell:    qwen3.8:27b
+Sprache:          German
+Idee / Prompt:
+Ein lockerer Reggae-Song über einen faulen Sonntag in der Hängematte, entspannte Männerstimme
+
+=== Style ===
+German, relaxed male vocal, reggae, chill, lazy, 75 BPM, clean electric guitar skank, upright bass, muted drums, warm organ, laid-back groove
+
+=== Lyrics ===
+[Verse]
+Die Sonne brennt auf meiner Haut
+keiner ruft, kein Stress, kein Laut
+Der Kaffee wird kalt auf dem Tisch
+mein Tag ist ruhig, mein Tag ist frisch
+
+[Chorus]
+Sonntagsruhe, ich schwing mich frei
+in der Hängematte, ganz nah bei
+Die Welt kann warten, ich bin hier
+und der Sonntag bleibt bei mir
+
+=== Geplante Partitur (ABC) ===
+X:1
+T:
+M:2/4
+L:1/16
+Q:1/4=74
+V: Vocal clef=treble name="Vocal Melody" snm="Vocal"
+V: Ins clef=treble name="Ins Melody" snm="Inst."
+K:C
+% intro
+V: Vocal
+Z|"C"z8|"Dm7"z8|"C"z8|
+V: Ins
+Z|z4E2G2|A2c2d2e2|z4E2G2|
+V: Vocal
+"Dm7"z8|"C"z8|"Dm7"z8|"C"z8|
+V: Ins
+A2c2d2e2-|e4E2G2|A2c2d2e2|z4e2g2|
+V: Vocal
+"Dm7"z8|
+V: Ins
+a2g2e2c2|
+% verse
+V: Vocal
+"C"z3Geedc|"Dm7"ddeed4|"C"z2GGc3G|"Dm7"cc2Gccz2|
+V: Ins
+Z4|
+V: Vocal
+"C"z3Geedc|"Dm7"ddeed2z2|"C"zGGGc2zG|"Dm7"ccG2c2z2|
+V: Ins
+Z4|
+% chorus
+V: Vocal
+"F"z4f2ff-|"F"f2e2d2c2|"C"e4z4|"C"z8|
+V: Ins
+Z4|
+V: Vocal
+"F"z2ffff2f-|"F"fe3d2c2|"C"e4z4|"C"z8|
+V: Ins
+Z4|
+V: Vocal
+"F"z3cf2ff-|"F"fe3d2c2|"C"e4"G/B"d4|"Am"c4"G6"B4|
+V: Ins
+Z4|
+V: Vocal
+"F"A4z2cc|"F"c2A2A2G2|"C"c8-|"C"c8|
+V: Ins
+Z4|
+V: Vocal
+"C"z8|"C"z8|
+V: Ins
+Z2|
+

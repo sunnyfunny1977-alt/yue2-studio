@@ -11,6 +11,19 @@ Quellen: [YuE2 Prompt-Guide (ComfyUI)](https://docs.comfy.org/tutorials/audio/yu
 
 <p align="center"><img src="docs/vorschau.png" alt="YuE2 Studio – Oberfläche mit Idee, Feinschliff, Generieren und Speichern" width="900"></p>
 
+## Beispiel / Example
+
+Ein mit der App erzeugter Song (Modus *Neuer Song*, Ollama `qwen3.8:27b`, YuE2 `cot=full`, 56 s, Rechenzeit 40 s auf einer RTX 5090):
+
+| Datei | Inhalt |
+|---|---|
+| [Sonntagsruhe.mp3](examples/Sonntagsruhe.mp3) | MP3, 48 kHz Stereo, 320 kbit/s |
+| [Sonntagsruhe.flac](examples/Sonntagsruhe.flac) | FLAC, 48 kHz Stereo, 24 Bit |
+| [Sonntagsruhe.txt](examples/Sonntagsruhe.txt) | Info-Datei: Idee, Style, Lyrics, Songlänge, Seed, Einstellungen und geplante Partitur (ABC) |
+
+> **Idee:** „Ein lockerer Reggae-Song über einen faulen Sonntag in der Hängematte, entspannte Männerstimme“
+> **Style:** `German, relaxed male vocal, reggae, chill, lazy, 75 BPM, clean electric guitar skank, upright bass, muted drums, warm organ, laid-back groove`
+
 ## Voraussetzungen
 - Windows 10/11, NVIDIA-GPU mit BF16 und ≥ 24 GB VRAM (getestet: RTX 5090)
 - [uv](https://docs.astral.sh/uv/), [ffmpeg](https://www.gyan.dev/ffmpeg/builds/) im PATH, git
