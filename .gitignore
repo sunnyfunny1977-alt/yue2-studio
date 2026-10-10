@@ -11,5 +11,9 @@ songs/
 install.log
 user_settings.json
 
+# Original-Screenshots im Projektordner (die README nutzt die aufbereiteten Bilder in docs/)
+/logo.png
+/vorschau.png
+
 # Lokale Editor-/Tool-Konfiguration
 .claude/

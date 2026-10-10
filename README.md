@@ -1,4 +1,4 @@
-# 🎵 YuE2 Studio
+<h1 align="center"><img src="docs/logo.png" alt="YuE2 Studio" width="100%"></h1>
 
 Lokale Gradio-App für das KI-Musikmodell **YuE2** (`m-a-p/YuE2-3B`).
 Lyrics und Style-Prompt erzeugt ein lokales Ollama-Modell über einen Masterprompt. Beides lässt sich danach von Hand oder per KI korrigieren.
@@ -6,6 +6,10 @@ Lyrics und Style-Prompt erzeugt ein lokales Ollama-Modell über einen Masterprom
 > **English:** A local Gradio app (German/English UI) for the AI music model YuE2. A local Ollama model writes the lyrics and style prompt from your idea via a master prompt, and you can refine them by hand or ask the AI to correct them. *New song* turns an idea into a full song. *Remake* transcribes the melody of an uploaded song (SheetSage2) and its vocals (Whisper), then sings new or translated lyrics on the original melody in a new style. Songs are only saved on request, as MP3 or FLAC, together with an info TXT file. Windows · NVIDIA GPU with ≥ 24 GB VRAM · see *Installation* below (`install.ps1`, then `start.bat`).
 
 Quellen: [YuE2 Prompt-Guide (ComfyUI)](https://docs.comfy.org/tutorials/audio/yue2/yue2) · [YuE GitHub](https://github.com/multimodal-art-projection/YuE)
+
+## Vorschau / Preview
+
+<p align="center"><img src="docs/vorschau.png" alt="YuE2 Studio – Oberfläche mit Idee, Feinschliff, Generieren und Speichern" width="900"></p>
 
 ## Voraussetzungen
 - Windows 10/11, NVIDIA-GPU mit BF16 und ≥ 24 GB VRAM (getestet: RTX 5090)
