@@ -17,6 +17,7 @@ atexit.register(shutil.rmtree, TEMP_DIR, ignore_errors=True)
 import gradio as gr  # noqa: E402
 import soundfile as sf  # noqa: E402
 
+import gpu_info  # noqa: E402
 import i18n  # noqa: E402
 import llm  # noqa: E402
 import ui_theme as ui  # noqa: E402
@@ -58,15 +59,11 @@ def lyric_language(code):
 # ---------------------------------------------------------------- Hilfen
 
 def gpu_status():
-    """(Text, ok) für den Status-Chip."""
-    try:
-        import torch
-        if torch.cuda.is_available():
-            p = torch.cuda.get_device_properties(0)
-            return f"{p.name.replace('NVIDIA GeForce ', '')} · {p.total_memory / 2**30:.0f} GB", True
+    """(Text, ok) für den Status-Chip, z. B. „RX 7900 XTX · 24 GB · ROCm“."""
+    gpu = gpu_info.current()
+    if gpu.vendor == "none":
         return t("chip.gpu_none"), False
-    except Exception:  # pragma: no cover
-        return t("chip.gpu_unknown"), False
+    return f"{gpu.short_name} · {gpu.vram_gib:.0f} GB · {gpu.runtime}", True
 
 
 def model_choices():
@@ -83,13 +80,13 @@ def model_choices():
 def hero_html():
     _, _, ok, text = model_choices()
     gpu_text, gpu_ok = gpu_status()
-    return ui.hero(ok, text, gpu_text, gpu_ok)
+    return ui.hero(ok, text, gpu_text, gpu_ok, gpu_info.current().low_vram)
 
 
 def refresh_models():
     models, value, ok, text = model_choices()
     gpu_text, gpu_ok = gpu_status()
-    return gr.update(choices=models, value=value), ui.hero(ok, text, gpu_text, gpu_ok)
+    return gr.update(choices=models, value=value), ui.hero(ok, text, gpu_text, gpu_ok, gpu_info.current().low_vram)
 
 
 def require_model(model):
@@ -138,7 +135,8 @@ def analyze_remake(audio_file):
     if not ENGINE.unload():
         raise gr.Error(t("err.busy"))
     keep = gr.update()
-    yield keep, keep, ui.notice("info", t("remake.step1"), t("remake.step1_sub")), keep, keep
+    yield keep, keep, ui.notice("info", t("remake.step1"),
+                                      t("remake.step1_sub_cpu" if gpu_info.current().is_amd else "remake.step1_sub")), keep, keep
     try:
         abc, warnings = transcribe_melody(audio_file)
     except RuntimeError as e:
@@ -404,7 +402,8 @@ def build_ui():
                     with gr.Accordion(t("adv.acc"), open=False) as adv_acc:
                         cot = tr(gr.Dropdown(cot_choices(), value="full", label=t("cot.label")),
                                  choices=cot_choices, label="cot.label")
-                        max_secs = tr(gr.Slider(30, 600, value=300, step=10, label=t("max.label")), label="max.label")
+                        max_secs = tr(gr.Slider(30, 600, value=180 if gpu_info.current().low_vram else 300, step=10,
+                                                label=t("max.label")), label="max.label")
                         with gr.Row():
                             seed = tr(gr.Number(value=831001, precision=0, label=t("seed.label"), min_width=120),
                                       label="seed.label")

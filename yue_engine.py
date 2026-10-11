@@ -3,6 +3,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 
+import gpu_info
 from i18n import t
 from settings import CONFIG
 
@@ -65,16 +66,43 @@ class Cancelled(Exception):
     pass
 
 
-def _patch_graph_attention():
-    """Windows-Builds von PyTorch registrieren den Flash-Attention-Operator, enthalten ihn aber nicht
-    („USE_FLASH_ATTENTION was not enabled for build“). YuE2s CUDA-Graph-Decoder wählt bei „auto“
-    trotzdem Flash – dort stattdessen cuDNN (bzw. den Wert aus config.json) verwenden."""
+def attention_choice(gpu):
+    """Attention-Backend für YuE2s Graph-Decoder; None = YuE2-Standard („auto“) unverändert lassen.
+
+    - NVIDIA/Windows: PyTorch registriert Flash-Attention, enthält sie aber nicht
+      („USE_FLASH_ATTENTION was not enabled for build“) → cuDNN.
+    - AMD/ROCm: „cudnn“ meint dort MIOpen ohne SDPBackend.CUDNN_ATTENTION, Flash-Attention ist unter
+      ROCm/Windows nicht verlässlich → öffentliche SDPA („sdpa“).
+    """
     import sys
     choice = CONFIG.get("yue2_attention", "auto")
-    if choice == "auto":
-        if sys.platform != "win32":
-            return
-        choice = "cudnn"
+    if choice != "auto":
+        return choice
+    if gpu.is_amd:
+        return "sdpa"
+    return "cudnn" if sys.platform == "win32" else None
+
+
+def pipeline_options(gpu):
+    """Ladeparameter für YuE2Pipeline passend zu Hersteller und VRAM."""
+    backend = CONFIG.get("yue2_backend", "auto")
+    if backend == "auto":
+        # HIP-Graphs sind mit YuE2 unter ROCm nicht verifiziert – eager ist dort der sichere Weg.
+        backend = "torch-eager" if gpu.is_amd else "torch"
+    budget = float(CONFIG["yue2_memory_budget_gib"])
+    if gpu.vram_gib:
+        budget = min(budget, gpu.vram_gib)
+    options = {"backend": backend, "memory_budget_gib": budget}
+    if gpu.low_vram:
+        # Sparmodus: AR-Modell während der Audio-Synthese auslagern, VAE in kleineren Kacheln dekodieren.
+        options.update(offload_ar=True, vae_core_frames=512)
+    return options
+
+
+def _patch_graph_attention(gpu):
+    choice = attention_choice(gpu)
+    if choice is None:
+        return
     import yue2.cuda_graph as cuda_graph
     original = cuda_graph.GraphAR.__init__
     if getattr(original, "_yue2_app_patched", False):
@@ -103,12 +131,11 @@ class YuE2Engine:
     def load(self):
         if self._pipe is None:
             from yue2 import YuE2Pipeline
-            _patch_graph_attention()
+            gpu = gpu_info.current()
+            _patch_graph_attention(gpu)
             self.progress.set("load", "load_model")
             self._pipe = YuE2Pipeline.from_pretrained(
-                CONFIG["yue2_model"], vae=CONFIG["yue2_vae"], device="cuda",
-                memory_budget_gib=CONFIG["yue2_memory_budget_gib"], backend=CONFIG["yue2_backend"],
-            )
+                CONFIG["yue2_model"], vae=CONFIG["yue2_vae"], device="cuda", **pipeline_options(gpu))
         return self._pipe
 
     def unload(self):
@@ -183,6 +210,8 @@ class YuE2Engine:
                 "abc": plan.abc,
                 "gen_seconds": gen_seconds,
                 "duration": len(audio) / SAMPLE_RATE,
+                "gpu": f"{gpu_info.current().short_name} ({gpu_info.current().runtime})",
+                "low_vram": gpu_info.current().low_vram,
             }
             self.progress.set("done", "done")
             return audio, meta

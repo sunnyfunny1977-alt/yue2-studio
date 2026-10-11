@@ -25,7 +25,7 @@ USER_FILE = ROOT / "user_settings.json"
 
 def load_user():
     try:
-        return json.loads(USER_FILE.read_text(encoding="utf-8"))
+        return json.loads(USER_FILE.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return {}
 

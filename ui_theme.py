@@ -249,7 +249,8 @@ def chip(text, kind=""):
     return f'<span class="chip {kind}">{dot}{esc(text)}</span>'
 
 
-def hero(ollama_ok, ollama_text, gpu_text, gpu_ok=True):
+def hero(ollama_ok, ollama_text, gpu_text, gpu_ok=True, low_vram=False):
+    lowvram_chip = chip(t("chip.lowvram"), "warn") if low_vram else ""
     return f"""
 <div class="hero">
   <div class="hero-left">
@@ -259,6 +260,7 @@ def hero(ollama_ok, ollama_text, gpu_text, gpu_ok=True):
       <div class="chips hero-chips">
         {chip(ollama_text, "ok" if ollama_ok else "err")}
         {chip(gpu_text, "ok" if gpu_ok else "warn")}
+        {lowvram_chip}
         {chip(t("chip.yue"), "accent")}
       </div></div>
   </div>

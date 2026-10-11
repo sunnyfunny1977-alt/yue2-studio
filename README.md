@@ -3,7 +3,7 @@
 Lokale Gradio-App für das KI-Musikmodell **YuE2** (`m-a-p/YuE2-3B`).
 Lyrics und Style-Prompt erzeugt ein lokales Ollama-Modell über einen Masterprompt. Beides lässt sich danach von Hand oder per KI korrigieren.
 
-> **English:** A local Gradio app (German/English UI) for the AI music model YuE2. A local Ollama model writes the lyrics and style prompt from your idea via a master prompt, and you can refine them by hand or ask the AI to correct them. *New song* turns an idea into a full song. *Remake* transcribes the melody of an uploaded song (SheetSage2) and its vocals (Whisper), then sings new or translated lyrics on the original melody in a new style. Songs are only saved on request, as MP3 or FLAC, together with an info TXT file. Windows · NVIDIA GPU with ≥ 24 GB VRAM · see *Installation* below (`install.ps1`, then `start.bat`).
+> **English:** A local Gradio app (German/English UI) for the AI music model YuE2. A local Ollama model writes the lyrics and style prompt from your idea via a master prompt, and you can refine them by hand or ask the AI to correct them. *New song* turns an idea into a full song. *Remake* transcribes the melody of an uploaded song (SheetSage2) and its vocals (Whisper), then sings new or translated lyrics on the original melody in a new style. Songs are only saved on request, as MP3 or FLAC, together with an info TXT file. Windows · NVIDIA GPU or AMD Radeon GPU (ROCm, untested on real hardware) with ≥ 24 GB VRAM, 16 GB cards in an experimental low-VRAM mode · see *Installation* below (`install.ps1` detects your GPU, then `start.bat`).
 
 Quellen: [YuE2 Prompt-Guide (ComfyUI)](https://docs.comfy.org/tutorials/audio/yue2/yue2) · [YuE GitHub](https://github.com/multimodal-art-projection/YuE)
 
@@ -25,7 +25,9 @@ Ein mit der App erzeugter Song (Modus *Neuer Song*, Ollama `qwen3.8:27b`, YuE2 `
 > **Style:** `German, relaxed male vocal, reggae, chill, lazy, 75 BPM, clean electric guitar skank, upright bass, muted drums, warm organ, laid-back groove`
 
 ## Voraussetzungen
-- Windows 10/11, NVIDIA-GPU mit BF16 und ≥ 24 GB VRAM (getestet: RTX 5090)
+- **NVIDIA:** Windows 10/11, GPU mit BF16 und ≥ 24 GB VRAM (getestet: RTX 5090)
+- **AMD Radeon:** Windows 11, Radeon RX 7000/9000, Radeon AI PRO R9700 oder PRO W7800/W7900, Treiber Adrenalin 26.2.2 oder neuer. Details im Abschnitt [AMD Radeon](#amd-radeon).
+- 16-GB-Karten beider Hersteller laufen in einem **experimentellen Sparmodus**.
 - [uv](https://docs.astral.sh/uv/), [ffmpeg](https://www.gyan.dev/ffmpeg/builds/) im PATH, git
 - [Ollama](https://ollama.com) mit mindestens einem Modell, z. B. `ollama pull qwen3.8:27b`
 - ca. 25 GB freier Speicher für Umgebungen und Modelle
@@ -34,14 +36,25 @@ Ein mit der App erzeugter Song (Modus *Neuer Song*, Ollama `qwen3.8:27b`, YuE2 `
 ```powershell
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
-Das Skript legt zwei getrennte Umgebungen an, weil YuE2 und SheetSage2 unterschiedliche Versionen benötigen:
+`install.ps1` erkennt die Grafikkarte (die Karte mit dem meisten VRAM entscheidet) und startet den passenden Installer. Du kannst ihn auch direkt aufrufen:
+
+| Installer | Grafikkarte | PyTorch |
+|---|---|---|
+| `install_nvidia.ps1` | NVIDIA (RTX 30/40/50 …) | Torch 2.10, CUDA 12.8 |
+| `install_amd.ps1` | AMD Radeon | Torch 2.9.1, ROCm 7.2.1 (AMD-Wheels für Windows) |
+
+Beide legen zwei getrennte Umgebungen an, weil YuE2 und SheetSage2 unterschiedliche Versionen benötigen:
 
 | Umgebung | Python | Inhalt |
 |---|---|---|
-| `.venv-yue2` | 3.12 | App, YuE2 0.1.6, Torch 2.10 (CUDA 12.8), Gradio, Whisper |
-| `.venv-sheetsage2` | 3.11 | SheetSage2 (Melodie → Noten) für Remakes, Torch 2.8 (CUDA 12.8) |
+| `.venv-yue2` | 3.12 | App, YuE2 0.1.6, PyTorch (CUDA bzw. ROCm), Gradio, Whisper |
+| `.venv-sheetsage2` | 3.11 | SheetSage2 (Melodie → Noten) für Remakes, Torch 2.8 (NVIDIA: CUDA, AMD: CPU) |
 
-Optionen: `-SkipSheetSage` (ohne Remake-Funktion) und `-SkipModels` (Modelle erst beim ersten Start laden).
+Optionen:
+- `-Vendor nvidia|amd`: Hersteller erzwingen (nur `install.ps1`)
+- `-SkipSheetSage`: ohne Remake-Funktion
+- `-SkipModels`: Modelle erst beim ersten Start laden
+- `-DryRun`: nur anzeigen, was installiert würde
 
 ## Start
 `start.bat` doppelklicken. Danach öffnet sich http://127.0.0.1:7860.
@@ -77,11 +90,26 @@ Kernregeln nach dem YuE2-Guide: Der **Style** ist eine kommagetrennte Liste in d
 | Schlüssel | Bedeutung |
 |---|---|
 | `ollama_default_model` | vorausgewähltes Ollama-Modell |
-| `yue2_backend` | `torch` (CUDA-Graphs, schnell) oder `torch-eager` (Fallback bei Problemen) |
-| `yue2_attention` | `auto` (Windows: cuDNN, da PyTorch für Windows ohne Flash-Attention gebaut ist), `cudnn`, `sdpa` oder `flash` |
-| `yue2_memory_budget_gib` | VRAM-Budget für YuE2 (Standard 30 bei 32-GB-Karten, mind. 24) |
+| `yue2_backend` | `auto` (NVIDIA: `torch` mit CUDA-Graphs, AMD: `torch-eager`), `torch` oder `torch-eager` |
+| `yue2_attention` | `auto` (NVIDIA/Windows: cuDNN, da PyTorch für Windows ohne Flash-Attention gebaut ist; AMD: `sdpa`), `cudnn`, `sdpa` oder `flash` |
+| `yue2_memory_budget_gib` | Obergrenze für das VRAM-Budget (wird automatisch auf den Speicher der Karte begrenzt) |
+| `yue2_low_vram` | Sparmodus: `auto` (unter 22 GB VRAM aktiv), `on` oder `off` |
 | `whisper_model` | Whisper-Modell für die Remake-Texterkennung |
 | `output_dir` | Standard-Speicherordner |
+
+## AMD Radeon
+Die App läuft auch auf AMD-Grafikkarten. Grundlage ist AMDs offizielles PyTorch für Windows (ROCm 7.2.1).
+
+> ⚠️ **Status:** Der AMD-Weg ist auf NVIDIA-Hardware so weit wie möglich nachgebildet und geprüft (Wheel-Adressen, Paketauflösung, Installer-Probelauf, die AMD-Code-Pfade der App). **Auf einer echten AMD-Karte wurde er noch nicht getestet.** Rückmeldungen gerne als [Issue](https://github.com/sunnyfunny1977-alt/yue2-studio/issues).
+
+- **Unterstützte Karten** (laut AMD): Radeon RX 7900 XTX/XT, RX 7700, RX 9060 XT, RX 9070/9070 XT, Radeon AI PRO R9700, Radeon PRO W7800/W7900 (gfx1100/1101/1200/1201).
+- **Voraussetzungen:** Windows 11, Treiber Adrenalin 26.2.2 oder neuer, Python 3.12 (installiert uv automatisch).
+- **VRAM:** Karten mit 24 GB oder mehr laufen normal. **16-GB-Karten** (z. B. RX 9070 XT) laufen im **experimentellen Sparmodus**: Das Sprachmodell wird während der Audio-Synthese ausgelagert, und die Songlänge startet bei 180 s. Das ist langsamer und kann trotzdem am Speicher scheitern.
+- **Technik:** YuE2 läuft mit Standard-Attention (`sdpa`) und ohne CUDA-Graphs (`torch-eager`). Wer experimentieren möchte, setzt in `config.json` `"yue2_backend": "torch"`.
+- **Remake:** Die Melodie-Analyse (SheetSage2) läuft auf AMD-Systemen auf der **CPU**, weil SheetSage2 Versionen voraussetzt, für die es keine ROCm-Pakete gibt. Das dauert einige Minuten pro Song. Whisper und YuE2 laufen auf der GPU.
+- **Bei Problemen** (laut AMD): Smart App Control deaktivieren und das Visual C++ 2015-2022 Redistributable installieren.
+
+> **English:** AMD Radeon GPUs are supported via AMD's official PyTorch for Windows (ROCm 7.2.1, Windows 11, Adrenalin 26.2.2+). Run `install.ps1` (auto-detects the GPU) or `install_amd.ps1`. Cards with ≥ 24 GB run normally, 16 GB cards use an experimental low-VRAM mode. On AMD the melody analysis for remakes runs on the CPU. **The AMD path has not yet been tested on real AMD hardware.**
 
 ## Hinweise
 - Die Songlänge ergibt sich vor allem aus den Lyrics. „Max. Songlänge“ ist nur eine Obergrenze (25 Tokens/s). Meldet die App „Token-Limit erreicht“, endet der Song eventuell abrupt.

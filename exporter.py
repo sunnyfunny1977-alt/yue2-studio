@@ -57,6 +57,7 @@ def build_info_text(info, audio_files, seconds):
         _row("txt.max_tokens", f"{info.get('max_tokens', '')} (≈ {int(info.get('max_tokens', 0)) // 25} s)"),
         _row("txt.truncated", truncated),
         _row("txt.render", f"{info.get('gen_seconds', 0):.0f} s"),
+        _row("txt.gpu", (info.get("gpu") or "-") + (f" · {t('txt.lowvram')}" if info.get("low_vram") else "")),
         "",
         t("txt.sec_llm"),
         _row("txt.llm", info.get("llm_model", "")),
