@@ -20,6 +20,7 @@ import soundfile as sf  # noqa: E402
 import gpu_info  # noqa: E402
 import i18n  # noqa: E402
 import llm  # noqa: E402
+import sysmon  # noqa: E402
 import ui_theme as ui  # noqa: E402
 from exporter import save_song  # noqa: E402
 from i18n import t  # noqa: E402
@@ -126,15 +127,56 @@ def create_new(idea, language_code, target_secs, model):
 # ---------------------------------------------------------------- Remake
 
 def load_source_info(audio_file):
-    """Liest beim Laden eines Songs Titel, Interpret, Album, Cover usw. aus den Tags (MP3, FLAC, M4A …)."""
+    """Liest beim Laden eines Songs Titel, Interpret, Album, Cover usw. aus den Tags (MP3, FLAC, M4A …).
+
+    Belegt außerdem die Felder der Online-Lyrics-Suche vor und setzt eine frühere Lyrics-Übernahme zurück.
+    """
+    reset = (gr.update(choices=[], value=None), None, None)
     if not audio_file:
-        return "", None
+        return ("", None, gr.update(), gr.update()) + reset
     from audio_utils import read_tags
     source = {"tags": read_tags(audio_file), "name": Path(audio_file).stem}
-    return ui.track_card(source["tags"], source["name"]), source
+    tags = source["tags"]
+    title = tags.get("title") or source["name"]
+    artist = tags.get("artist") or tags.get("album_artist") or ""
+    return (ui.track_card(tags, source["name"]), source, title, artist) + reset
 
 
-def analyze_remake(audio_file):
+def search_lyrics(title, artist, source):
+    """Sucht den Originaltext online (LRCLIB). Treffer werden als Liste im State gehalten."""
+    if not (title or "").strip():
+        raise gr.Error(t("lyr.need_title"))
+    import lyrics_online
+    duration = ((source or {}).get("tags") or {}).get("duration")
+    try:
+        results = lyrics_online.search(title, artist, duration=duration)
+    except lyrics_online.LyricsError as e:
+        return gr.update(choices=[], value=None), [], ui.notice("err", t("lyr.failed_t"), ui.esc(e))
+    if not results:
+        return gr.update(choices=[], value=None), [], ui.notice("warn", t("lyr.none_t"), t("lyr.none_b"))
+    choices = [(lyric_label(r), str(i)) for i, r in enumerate(results)]
+    return gr.update(choices=choices, value="0"), results, ui.notice("ok", t("lyr.found", n=len(results)))
+
+
+def lyric_label(r):
+    album = f" · {r['album']}" if r["album"] else ""
+    length = f" · {fmt_duration(r['duration'])}" if r["duration"] else ""
+    return f"{r['title']} – {r['artist']}{album}{length}{' · ⏱ sync' if r['synced'] else ''}"
+
+
+def use_lyrics(choice, results):
+    """Übernimmt den gewählten Treffer in das Feld „Originaltext“ und merkt sich die Quelle."""
+    if choice in (None, "") or not results:
+        raise gr.Error(t("lyr.pick_first"))
+    import lyrics_online
+    r = results[int(choice)]
+    label = f"{r['title']} – {r['artist']}" + (f" ({r['album']})" if r["album"] else "")
+    source = {"provider": lyrics_online.PROVIDER, "id": r["id"], "label": label}
+    lines = len([line for line in r["lyrics"].splitlines() if line.strip()])
+    return r["lyrics"], source, ui.notice("ok", t("lyr.used_t"), ui.esc(t("lyr.used_b", lines=lines, label=label)))
+
+
+def analyze_remake(audio_file, current_text, lyrics_source):
     if not audio_file:
         raise gr.Error(t("err.no_upload"))
     from melody import transcribe_melody
@@ -152,19 +194,24 @@ def analyze_remake(audio_file):
         yield keep, keep, ui.notice("err", t("remake.melody_failed"), ui.esc(e)), keep, keep
         raise gr.Error(str(e))
     note = f"<br>{t('remake.hints')}: {ui.esc('; '.join(warnings)[:300])}" if warnings else ""
-    yield abc, keep, ui.notice("info", t("remake.step2"), t("remake.melody_done") + note), keep, keep
-    try:
-        text = transcribe(audio_file)
-    except Exception as e:
-        yield keep, keep, ui.notice("err", t("remake.asr_failed"), ui.esc(e)), keep, keep
-        raise gr.Error(t("err.whisper", e=e))
+    if lyrics_source and (current_text or "").strip():
+        # Originaltext stammt aus der Online-Suche – exakter als Spracherkennung, Whisper entfällt.
+        text = keep
+        note = f"<br>{t('remake.asr_skipped')}" + note
+    else:
+        yield abc, keep, ui.notice("info", t("remake.step2"), t("remake.melody_done") + note), keep, keep
+        try:
+            text = transcribe(audio_file)
+        except Exception as e:
+            yield keep, keep, ui.notice("err", t("remake.asr_failed"), ui.esc(e)), keep, keep
+            raise gr.Error(t("err.whisper", e=e))
     from audio_utils import load_mono
     duration = len(load_mono(audio_file, 8000)) / 8000
     yield (abc, text, ui.notice("ok", t("remake.done", dur=fmt_duration(duration)), t("remake.done_sub") + note),
            gr.update(value=min(600, int(duration) + 30)), duration)
 
 
-def create_remake(transcript, lyrics_mode, target_lang_code, style_wish, abc, model, src_duration):
+def create_remake(transcript, lyrics_mode, target_lang_code, style_wish, abc, model, src_duration, lyrics_source):
     require_model(model)
     if not (abc or "").strip():
         raise gr.Error(t("err.no_abc"))
@@ -173,13 +220,16 @@ def create_remake(transcript, lyrics_mode, target_lang_code, style_wish, abc, mo
     target = lyric_language(target_lang_code)
     if lyrics_mode == "translate" and not target:
         raise gr.Error(t("err.no_target_lang"))
+    origin = ("online lyrics database (exact wording, no section tags)" if lyrics_source
+              else "automatic speech recognition of the vocals (may contain recognition errors)")
     user = (f"Lyrics mode: {lyrics_mode}\n"
             + (f"Target language: {target}\n" if lyrics_mode == "translate" else "")
             + f"User wish for the new style / idea: {(style_wish or '').strip() or '(none)'}\n"
             f"Original song length: about {int(src_duration or 0)} seconds\n"
             f"Original score header (tempo, meter, key): {abc_header(abc) or 'unknown'}\n"
-            f"Section order detected in the original melody: {' → '.join(sections) or 'unknown'}\n\n"
-            f"Transcript of the original vocals:\n{(transcript or '').strip() or '(no vocals recognised)'}")
+            f"Section order detected in the original melody: {' → '.join(sections) or 'unknown'}\n"
+            f"Source of the original lyrics: {origin}\n\n"
+            f"Original lyrics:\n{(transcript or '').strip() or '(no vocals recognised)'}")
     try:
         data = llm.chat_json(model, prompt("master_remake.md"), user)
     except llm.OllamaError as e:
@@ -215,7 +265,7 @@ def normalize(style, lyrics):
 # ---------------------------------------------------------------- Generierung
 
 def generate(mode, title, style, lyrics, language, cot, seed, random_seed, cfg, max_secs, abc,
-             model, idea, style_wish, transcript, lyrics_mode, source_file, source_meta):
+             model, idea, style_wish, transcript, lyrics_mode, source_file, source_meta, lyrics_origin):
     errors, _ = lint(style, lyrics)
     if errors:
         raise gr.Error(t("err.fix_first") + "\n" + "\n".join(errors[:5]))
@@ -264,7 +314,7 @@ def generate(mode, title, style, lyrics, language, cot, seed, random_seed, cfg, 
     if mode == MODE_REMAKE:
         tags = {k: v for k, v in ((source_meta or {}).get("tags") or {}).items() if k != "cover"}
         info.update(source_file=Path(source_file).name if source_file else "", transcript=transcript,
-                    lyrics_mode=lyrics_mode, abc=abc, source_tags=tags)
+                    lyrics_mode=lyrics_mode, abc=abc, source_tags=tags, lyrics_origin=lyrics_origin)
     result = {"audio": audio, "info": info, "meta": meta, "seed": seed, "title": title}
     yield str(preview), ui.result_html(title, meta, seed), result, seed
 
@@ -327,6 +377,8 @@ def build_ui():
         src_duration = gr.State(0)
         result_state = gr.State(None)
         source_info = gr.State(None)  # Tags des geladenen Original-Songs (Remake)
+        lyric_results = gr.State([])  # Treffer der Online-Lyrics-Suche
+        lyrics_source = gr.State(None)  # gesetzt, wenn der Originaltext aus der Online-Suche stammt
 
         with gr.Row(equal_height=False):
             # ================= Linke Spalte: Komposition =================
@@ -361,6 +413,19 @@ def build_ui():
                         source = tr(gr.Audio(label=t("source.label"), type="filepath", sources=["upload"],
                                              waveform_options=ui.WAVEFORM), label="source.label")
                         track_box = gr.HTML(elem_classes="html-slot")
+                        with gr.Accordion(t("lyr.acc"), open=False) as lyr_acc:
+                            with gr.Row(equal_height=True):
+                                lyr_title = tr(gr.Textbox(label=t("lyr.title"), scale=3, max_lines=1), label="lyr.title")
+                                lyr_artist = tr(gr.Textbox(label=t("lyr.artist"), scale=3, max_lines=1), label="lyr.artist")
+                                lyr_search_btn = tr(gr.Button(t("lyr.search_btn"), scale=1, min_width=120,
+                                                              variant="secondary"), value="lyr.search_btn")
+                            lyr_choice = tr(gr.Dropdown([], label=t("lyr.results"), elem_id="lyr-dd"),
+                                            label="lyr.results")
+                            lyr_use_btn = tr(gr.Button(t("lyr.use_btn"), variant="primary"), value="lyr.use_btn")
+                            lyr_status = gr.HTML(elem_classes="html-slot")
+                            lyr_hint = tr(gr.HTML(f'<div class="lyr-hint">{t("lyr.hint")}</div>'),
+                                          value=lambda: f'<div class="lyr-hint">{t("lyr.hint")}</div>')
+                        tr(lyr_acc, label="lyr.acc")
                         analyze_btn = tr(gr.Button(t("analyze.btn"), variant="secondary", elem_classes="ghost-btn"),
                                          value="analyze.btn")
                         remake_status = gr.HTML(elem_classes="html-slot")
@@ -440,7 +505,7 @@ def build_ui():
 
         # --- Sprache anwenden: alle registrierten Texte plus dynamische Inhalte neu erzeugen
         translated = [component for component, _ in registry]
-        dynamic = [hero, lint_box, gen_status, remake_status, save_box, track_box]
+        dynamic = [hero, lint_box, gen_status, remake_status, save_box, track_box, lyr_status]
 
         def texts(style_text, lyrics_text, result, source):
             updates = []
@@ -448,7 +513,7 @@ def build_ui():
                 updates.append(gr.update(**{prop: (src() if callable(src) else t(src)) for prop, src in spec.items()}))
             status = ui.result_html(result["title"], result["meta"], result["seed"]) if result else ui.idle_html()
             track = ui.track_card(source["tags"], source["name"]) if source else ""
-            return updates + [hero_html(), ui.lint_html(style_text, lyrics_text), status, "", "", track]
+            return updates + [hero_html(), ui.lint_html(style_text, lyrics_text), status, "", "", track, ""]
 
         def switch_language(lang, *inputs):
             i18n.set_lang(lang)
@@ -485,17 +550,29 @@ def build_ui():
                          outputs=picked, show_progress="hidden")
             button.click(None, js=f"() => {{ try {{ localStorage.setItem('yue2_lang', '{code}'); }} catch (e) {{}} }}")
 
+        # --- Live-Systemanzeige im Kopfbereich: Werte alle 2 s holen, Balken per JavaScript animieren
+        # Das Datenfeld bleibt eingebunden (per CSS versteckt); ein Beobachter in ui.SYSMON_JS liest es aus.
+        sysmon_data = gr.Textbox(elem_id="sysmon-data", container=False, show_label=False)
+        sysmon_timer = gr.Timer(2.0)
+        sysmon_timer.tick(sysmon.snapshot_json, outputs=sysmon_data, show_progress="hidden", queue=False)
+
         # --- Events
         refresh_btn.click(refresh_models, outputs=[model_dd, hero])
         mode.change(lambda m: (gr.update(visible=m == MODE_NEW), gr.update(visible=m == MODE_REMAKE)),
                     inputs=mode, outputs=[new_group, remake_group])
         song_out = [title, style, lyrics, language_state, lint_box, save_name, max_secs]
         create_new_btn.click(create_new, inputs=[idea, language, target_secs, model_dd], outputs=song_out)
-        source.change(load_source_info, inputs=source, outputs=[track_box, source_info], show_progress="hidden")
-        analyze_btn.click(analyze_remake, inputs=source,
+        source.change(load_source_info, inputs=source,
+                      outputs=[track_box, source_info, lyr_title, lyr_artist, lyr_choice, lyric_results, lyrics_source],
+                      show_progress="hidden")
+        lyr_search_btn.click(search_lyrics, inputs=[lyr_title, lyr_artist, source_info],
+                             outputs=[lyr_choice, lyric_results, lyr_status])
+        lyr_use_btn.click(use_lyrics, inputs=[lyr_choice, lyric_results], outputs=[transcript, lyrics_source, lyr_status])
+        analyze_btn.click(analyze_remake, inputs=[source, transcript, lyrics_source],
                           outputs=[abc, transcript, remake_status, max_secs, src_duration], show_progress="hidden")
         create_remake_btn.click(create_remake,
-                                inputs=[transcript, lyrics_mode, remake_lang, style_wish, abc, model_dd, src_duration],
+                                inputs=[transcript, lyrics_mode, remake_lang, style_wish, abc, model_dd, src_duration,
+                                        lyrics_source],
                                 outputs=song_out)
         check_btn.click(check, inputs=[style, lyrics], outputs=lint_box)
         normalize_btn.click(normalize, inputs=[style, lyrics], outputs=[lyrics, lint_box])
@@ -504,7 +581,7 @@ def build_ui():
         gen_event = gen_btn.click(generate,
                                   inputs=[mode, title, style, lyrics, language_state, cot, seed, random_seed, cfg,
                                           max_secs, abc, model_dd, idea, style_wish, transcript, lyrics_mode, source,
-                                          source_info],
+                                          source_info, lyrics_source],
                                   outputs=[player, gen_status, result_state, seed], show_progress="hidden")
         # ENGINE.cancel() stoppt YuE2 im Hintergrund-Thread, cancels= beendet den UI-Generator.
         cancel_btn.click(cancel, outputs=gen_status, cancels=[gen_event], queue=False)

@@ -81,11 +81,14 @@ def build_info_text(info, audio_files, seconds):
     ]
     if mode == "remake":
         lm = info.get("lyrics_mode")
+        origin = info.get("lyrics_origin")
+        source_text = t("txt.src_online", provider=origin["provider"], label=origin["label"]) if origin else t("txt.src_asr")
         lines += ["", t("txt.sec_source"),
                   _row("txt.source", info.get("source_file", "")),
                   _row("txt.original", _describe_source(info.get("source_tags") or {})),
+                  _row("txt.lyrics_source", source_text),
                   _row("txt.lyrics_mode", t(f"lm.{lm}") if lm else ""),
-                  "", t("txt.transcript"), info.get("transcript", "") or "-",
+                  "", t("txt.lyrics_online" if origin else "txt.transcript"), info.get("transcript", "") or "-",
                   "", t("txt.abc_used"), info.get("abc", "") or "-"]
     elif info.get("abc"):
         lines += ["", t("txt.abc_planned"), info["abc"]]

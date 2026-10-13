@@ -9,6 +9,7 @@
   "yue2_memory_budget_gib": 30,
   "yue2_low_vram": "auto",
   "whisper_model": "openai/whisper-large-v3-turbo",
+  "lyrics_api_url": "https://lrclib.net/api",
   "sheetsage_python": ".venv-sheetsage2/Scripts/python.exe",
   "sheetsage_model": "models/SheetSage2",
   "output_dir": "songs",

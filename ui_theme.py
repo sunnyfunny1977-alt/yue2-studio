@@ -214,6 +214,21 @@ footer { display: none !important; }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: rgba(139,92,246,.35); border-radius: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
+/* ---------- Live-Systemanzeige im Kopfbereich ---------- */
+.sysmon { z-index: 1; display: grid; gap: 7px; width: 400px; max-width: 100%; margin-right: 128px;
+  padding: 12px 16px; border-radius: 16px; background: rgba(0,0,0,.28); border: 1px solid rgba(255,255,255,.08); }
+.mon-row { display: grid; grid-template-columns: 70px 1fr 112px; align-items: center; gap: 10px; }
+.mon-label { font-size: 11.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: #a9a6d6; }
+.mon-bar { height: 8px; border-radius: 999px; background: rgba(255,255,255,.08); overflow: hidden; }
+.mon-fill { height: 100%; width: 0%; border-radius: 999px; transition: width .9s ease, background .6s ease;
+  background: linear-gradient(90deg, #7c3aed, #22d3ee); box-shadow: 0 0 12px rgba(139,92,246,.55); }
+.mon-row.warn .mon-fill { background: linear-gradient(90deg, #f59e0b, #fbbf24); box-shadow: 0 0 12px rgba(251,191,36,.5); }
+.mon-row.high .mon-fill { background: linear-gradient(90deg, #f43f5e, #fb7185); box-shadow: 0 0 12px rgba(244,63,94,.55); }
+.mon-row.na .mon-bar { opacity: .35; }
+.mon-value { font-family: var(--font-mono); font-size: 12px; color: #e8e7f5; text-align: right; white-space: nowrap; }
+@media (max-width: 1250px) { .sysmon { margin-right: 0; width: 100%; } }
+#sysmon-data { display: none !important; }
+
 /* ---------- Song-Info (Remake) ---------- */
 .track { display: flex; gap: 16px; align-items: center; padding: 14px; border-radius: 18px;
   background: linear-gradient(135deg, rgba(124,58,237,.14), rgba(6,182,212,.07));
@@ -227,6 +242,10 @@ footer { display: none !important; }
 .track-artist { font-size: 14.5px; color: #c4b5fd; font-weight: 600; margin-bottom: 4px; }
 .track-tech { font-size: 12.5px; color: #9b99bd; margin-top: 4px; font-family: var(--font-mono); }
 .track-hint { font-size: 12.5px; color: #fde68a; margin-top: 2px; }
+.lyr-hint { font-size: 12.5px; color: #9b99bd; line-height: 1.5; }
+.lyr-hint a { color: #c4b5fd; }
+#lyr-dd ul.options { min-width: 420px !important; }
+#lyr-dd ul.options li { width: auto !important; }
 
 /* ---------- Sprachumschalter & Startdialog ---------- */
 .hero-chips { margin-top: 12px; }
@@ -263,6 +282,18 @@ def chip(text, kind=""):
     return f'<span class="chip {kind}">{dot}{esc(text)}</span>'
 
 
+MONITOR_ROWS = ("vram", "gpu", "power", "cpu", "ram")
+
+
+def sysmon_html():
+    """Gerüst der Live-Anzeige; die Werte setzt window.yue2Sysmon (siehe SYSMON_JS) alle 2 Sekunden."""
+    rows = "".join(
+        f'<div class="mon-row" id="mon-{key}"><span class="mon-label">{esc(t("mon." + key))}</span>'
+        f'<div class="mon-bar"><div class="mon-fill"></div></div><span class="mon-value">–</span></div>'
+        for key in MONITOR_ROWS)
+    return f'<div class="sysmon">{rows}</div>'
+
+
 def hero(ollama_ok, ollama_text, gpu_text, gpu_ok=True, low_vram=False):
     lowvram_chip = chip(t("chip.lowvram"), "warn") if low_vram else ""
     return f"""
@@ -278,6 +309,7 @@ def hero(ollama_ok, ollama_text, gpu_text, gpu_ok=True, low_vram=False):
         {chip(t("chip.yue"), "accent")}
       </div></div>
   </div>
+  {sysmon_html()}
 </div>"""
 
 
@@ -403,6 +435,47 @@ def lint_html(style, lyrics):
     return f'<div class="lint">{head}{"".join(items)}</div>'
 
 
+SYSMON_JS = """<script>
+window.yue2Sysmon = function (raw) {
+  let d;
+  try { d = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) { return; }
+  if (!d) return;
+  const lang = navigator.language || 'de';
+  const num = (v, digits) => v.toLocaleString(lang, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  const set = (key, used, total, text) => {
+    const row = document.getElementById('mon-' + key);
+    if (!row) return;
+    const fill = row.querySelector('.mon-fill'), value = row.querySelector('.mon-value');
+    if (used === null || used === undefined || !total) {
+      row.classList.add('na'); fill.style.width = '0%'; value.textContent = '–'; return;
+    }
+    const pct = Math.max(0, Math.min(100, used / total * 100));
+    row.classList.remove('na');
+    row.classList.toggle('warn', pct >= 85 && pct < 95);
+    row.classList.toggle('high', pct >= 95);
+    fill.style.width = pct.toFixed(1) + '%';
+    value.textContent = text;
+  };
+  set('vram', d.vram_used, d.vram_total,
+      d.vram_total ? num(d.vram_used, 1) + ' / ' + num(d.vram_total, 0) + ' GB' : '');
+  set('gpu', d.gpu_util, 100, d.gpu_util === null ? '' : num(d.gpu_util, 0) + ' %');
+  set('power', d.power, d.power_limit,
+      d.power === null ? '' : num(d.power, 0) + ' / ' + num(d.power_limit, 0) + ' W');
+  set('cpu', d.cpu, 100, num(d.cpu, 0) + ' %');
+  set('ram', d.ram_used, d.ram_total, num(d.ram_used, 1) + ' / ' + num(d.ram_total, 0) + ' GB');
+};
+/* Der Timer in app.py schreibt die Werte alle 2 s in #sysmon-data - hier jede Sekunde auf Aenderungen pruefen.
+   Nur Block-Kommentare verwenden: Gradio fuegt den Kopf-Code teils ohne Zeilenumbrueche ein. */
+(function () {
+  let last = null;
+  setInterval(function () {
+    const box = document.querySelector('#sysmon-data textarea, #sysmon-data input');
+    if (box && box.value && box.value !== last) { last = box.value; window.yue2Sysmon(box.value); }
+  }, 1000);
+})();
+</script>"""
+
+
 def head_html(lang):
     """Gradio übersetzt seine eigenen Texte (z. B. „Audio hier ablegen“) anhand von navigator.language.
     Vor dem Start der App auf die gewählte Sprache setzen (zuletzt gewählte Sprache aus localStorage)."""
@@ -414,4 +487,4 @@ def head_html(lang):
     Object.defineProperty(navigator, 'languages', {{ get: function () {{ return [l]; }} }});
   }} catch (e) {{}}
 }})();
-</script>"""
+</script>""" + SYSMON_JS

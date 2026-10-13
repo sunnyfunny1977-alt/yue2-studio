@@ -1,3 +1,5 @@
 gradio>=5.40,<6
 requests>=2.31
 hf_xet
+nvidia-ml-py
+psutil
