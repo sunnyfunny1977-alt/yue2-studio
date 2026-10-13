@@ -214,6 +214,20 @@ footer { display: none !important; }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: rgba(139,92,246,.35); border-radius: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
+/* ---------- Song-Info (Remake) ---------- */
+.track { display: flex; gap: 16px; align-items: center; padding: 14px; border-radius: 18px;
+  background: linear-gradient(135deg, rgba(124,58,237,.14), rgba(6,182,212,.07));
+  border: 1px solid rgba(139,92,246,.28); }
+.track-cover { width: 96px; height: 96px; border-radius: 14px; object-fit: cover; flex-shrink: 0;
+  box-shadow: 0 10px 28px -10px rgba(0,0,0,.8); }
+.track-cover.placeholder { display: flex; align-items: center; justify-content: center; font-size: 40px; color: #fff;
+  background: """ + GRADIENT + """; }
+.track-body { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.track-title { font-size: 18px; font-weight: 750; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.track-artist { font-size: 14.5px; color: #c4b5fd; font-weight: 600; margin-bottom: 4px; }
+.track-tech { font-size: 12.5px; color: #9b99bd; margin-top: 4px; font-family: var(--font-mono); }
+.track-hint { font-size: 12.5px; color: #fde68a; margin-top: 2px; }
+
 /* ---------- Sprachumschalter & Startdialog ---------- */
 .hero-chips { margin-top: 12px; }
 #top-row { position: relative; }
@@ -333,6 +347,43 @@ def result_html(title, meta, seed):
     <div><div class="result-title">{esc(title or t('result.untitled'))}</div>
     <div class="result-sub">{t("result.sub")}</div></div></div>
   <div class="chips">{''.join(chips)}</div>{warn}
+</div>"""
+
+
+def track_card(info, file_name=""):
+    """Karte mit Cover, Titel, Interpret und Tags des geladenen Original-Songs (Remake)."""
+    if not info and not file_name:
+        return ""
+    info = info or {}
+    title = info.get("title") or file_name or "?"
+    artist = info.get("artist") or info.get("album_artist") or t("track.unknown_artist")
+    cover = info.get("cover")
+    art = (f'<img class="track-cover" src="{cover}" alt="">' if cover
+           else '<div class="track-cover placeholder">♪</div>')
+    tags = [chip(f"{t('track.' + key)}: {info[key]}") for key in ("album", "year", "genre", "track", "composer")
+            if info.get(key)]
+    tech = [info.get("codec", "")]
+    if info.get("bitrate_kbps"):
+        tech.append(f"{info['bitrate_kbps']} kbit/s")
+    if info.get("sample_rate"):
+        tech.append(f"{info['sample_rate'] / 1000:g} kHz")
+    if info.get("channels"):
+        tech.append(t("track.stereo") if info["channels"] == 2 else t("track.mono") if info["channels"] == 1
+                    else f"{info['channels']} ch")
+    if info.get("duration"):
+        tech.append(f"{fmt_duration(info['duration'])} min")
+    has_tags = any(info.get(k) for k in ("title", "artist", "album"))
+    hint = "" if has_tags else f'<div class="track-hint">{esc(t("track.no_tags"))}</div>'
+    return f"""
+<div class="track">
+  {art}
+  <div class="track-body">
+    <div class="track-title">{esc(title)}</div>
+    <div class="track-artist">{esc(artist)}</div>
+    <div class="chips">{''.join(tags)}</div>
+    <div class="track-tech">{esc(' · '.join(x for x in tech if x))}</div>
+    {hint}
+  </div>
 </div>"""
 
 

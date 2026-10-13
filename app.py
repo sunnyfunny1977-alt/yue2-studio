@@ -125,6 +125,15 @@ def create_new(idea, language_code, target_secs, model):
 
 # ---------------------------------------------------------------- Remake
 
+def load_source_info(audio_file):
+    """Liest beim Laden eines Songs Titel, Interpret, Album, Cover usw. aus den Tags (MP3, FLAC, M4A …)."""
+    if not audio_file:
+        return "", None
+    from audio_utils import read_tags
+    source = {"tags": read_tags(audio_file), "name": Path(audio_file).stem}
+    return ui.track_card(source["tags"], source["name"]), source
+
+
 def analyze_remake(audio_file):
     if not audio_file:
         raise gr.Error(t("err.no_upload"))
@@ -206,7 +215,7 @@ def normalize(style, lyrics):
 # ---------------------------------------------------------------- Generierung
 
 def generate(mode, title, style, lyrics, language, cot, seed, random_seed, cfg, max_secs, abc,
-             model, idea, style_wish, transcript, lyrics_mode, source_file):
+             model, idea, style_wish, transcript, lyrics_mode, source_file, source_meta):
     errors, _ = lint(style, lyrics)
     if errors:
         raise gr.Error(t("err.fix_first") + "\n" + "\n".join(errors[:5]))
@@ -253,8 +262,9 @@ def generate(mode, title, style, lyrics, language, cot, seed, random_seed, cfg, 
         "idea": idea if mode == MODE_NEW else style_wish,
     }
     if mode == MODE_REMAKE:
+        tags = {k: v for k, v in ((source_meta or {}).get("tags") or {}).items() if k != "cover"}
         info.update(source_file=Path(source_file).name if source_file else "", transcript=transcript,
-                    lyrics_mode=lyrics_mode, abc=abc)
+                    lyrics_mode=lyrics_mode, abc=abc, source_tags=tags)
     result = {"audio": audio, "info": info, "meta": meta, "seed": seed, "title": title}
     yield str(preview), ui.result_html(title, meta, seed), result, seed
 
@@ -316,6 +326,7 @@ def build_ui():
         language_state = gr.State("")
         src_duration = gr.State(0)
         result_state = gr.State(None)
+        source_info = gr.State(None)  # Tags des geladenen Original-Songs (Remake)
 
         with gr.Row(equal_height=False):
             # ================= Linke Spalte: Komposition =================
@@ -349,6 +360,7 @@ def build_ui():
                     with gr.Column(visible=False) as remake_group:
                         source = tr(gr.Audio(label=t("source.label"), type="filepath", sources=["upload"],
                                              waveform_options=ui.WAVEFORM), label="source.label")
+                        track_box = gr.HTML(elem_classes="html-slot")
                         analyze_btn = tr(gr.Button(t("analyze.btn"), variant="secondary", elem_classes="ghost-btn"),
                                          value="analyze.btn")
                         remake_status = gr.HTML(elem_classes="html-slot")
@@ -428,29 +440,29 @@ def build_ui():
 
         # --- Sprache anwenden: alle registrierten Texte plus dynamische Inhalte neu erzeugen
         translated = [component for component, _ in registry]
-        dynamic = [hero, lint_box, gen_status, remake_status, save_box]
+        dynamic = [hero, lint_box, gen_status, remake_status, save_box, track_box]
 
-        def texts(style_text, lyrics_text, result):
+        def texts(style_text, lyrics_text, result, source):
             updates = []
             for _, spec in registry:
                 updates.append(gr.update(**{prop: (src() if callable(src) else t(src)) for prop, src in spec.items()}))
             status = ui.result_html(result["title"], result["meta"], result["seed"]) if result else ui.idle_html()
-            return updates + [hero_html(), ui.lint_html(style_text, lyrics_text), status, "", ""]
+            track = ui.track_card(source["tags"], source["name"]) if source else ""
+            return updates + [hero_html(), ui.lint_html(style_text, lyrics_text), status, "", "", track]
 
-        def switch_language(lang, style_text, lyrics_text, result):
+        def switch_language(lang, *inputs):
             i18n.set_lang(lang)
-            return texts(style_text, lyrics_text, result)
+            return texts(*inputs)
 
-        def pick_language(lang, style_text, lyrics_text, result):
+        def pick_language(lang, *inputs):
             i18n.set_lang(lang)  # speichert die Wahl – der Dialog erscheint nicht wieder
-            return [gr.update(visible=False), gr.update(value=lang)] + texts(style_text, lyrics_text, result)
+            return [gr.update(visible=False), gr.update(value=lang)] + texts(*inputs)
 
-        def on_load(style_text, lyrics_text, result):
+        def on_load(*inputs):
             # Neu laden der Seite: aktuelle Sprache anwenden und Dialog nur beim ersten Start zeigen.
-            return [gr.update(visible=i18n.is_first_start()), gr.update(value=i18n.get_lang())] + \
-                texts(style_text, lyrics_text, result)
+            return [gr.update(visible=i18n.is_first_start()), gr.update(value=i18n.get_lang())] + texts(*inputs)
 
-        text_inputs = [style, lyrics, result_state]
+        text_inputs = [style, lyrics, result_state, source_info]
         demo.load(on_load, inputs=text_inputs, outputs=[modal, lang_switch] + translated + dynamic,
                   show_progress="hidden")
         # .input statt .change: reagiert nur auf Klicks des Nutzers, nicht auf das programmatische Setzen beim Laden.
@@ -462,13 +474,14 @@ def build_ui():
           try { localStorage.setItem('yue2_lang', l); } catch (e) {}
           const typed = ['#idea-box', '#style-box', '#lyrics-box'].some(
             (id) => (document.querySelector(id + ' textarea') || {}).value?.trim());
-          const busy = typed || document.querySelector('.result, .prog:not(.idle)') || document.querySelector('audio[src]');
+          // Geladener Original-Song (.track), generierter Song (.result) oder laufende Generierung zählen als Arbeit.
+          const busy = typed || document.querySelector('.track, .result, .prog:not(.idle)');
           if (!busy) setTimeout(() => window.location.reload(), 700);
         }"""
         lang_switch.input(None, inputs=lang_switch, js=remember)
         picked = [modal, lang_switch] + translated + dynamic
         for button, code in ((pick_de, "de"), (pick_en, "en")):
-            button.click(lambda s, ly, r, code=code: pick_language(code, s, ly, r), inputs=text_inputs,
+            button.click(lambda *inputs, code=code: pick_language(code, *inputs), inputs=text_inputs,
                          outputs=picked, show_progress="hidden")
             button.click(None, js=f"() => {{ try {{ localStorage.setItem('yue2_lang', '{code}'); }} catch (e) {{}} }}")
 
@@ -478,6 +491,7 @@ def build_ui():
                     inputs=mode, outputs=[new_group, remake_group])
         song_out = [title, style, lyrics, language_state, lint_box, save_name, max_secs]
         create_new_btn.click(create_new, inputs=[idea, language, target_secs, model_dd], outputs=song_out)
+        source.change(load_source_info, inputs=source, outputs=[track_box, source_info], show_progress="hidden")
         analyze_btn.click(analyze_remake, inputs=source,
                           outputs=[abc, transcript, remake_status, max_secs, src_duration], show_progress="hidden")
         create_remake_btn.click(create_remake,
@@ -489,7 +503,8 @@ def build_ui():
         title.change(lambda value: value, inputs=title, outputs=save_name)
         gen_event = gen_btn.click(generate,
                                   inputs=[mode, title, style, lyrics, language_state, cot, seed, random_seed, cfg,
-                                          max_secs, abc, model_dd, idea, style_wish, transcript, lyrics_mode, source],
+                                          max_secs, abc, model_dd, idea, style_wish, transcript, lyrics_mode, source,
+                                          source_info],
                                   outputs=[player, gen_status, result_state, seed], show_progress="hidden")
         # ENGINE.cancel() stoppt YuE2 im Hintergrund-Thread, cancels= beendet den UI-Generator.
         cancel_btn.click(cancel, outputs=gen_status, cancels=[gen_event], queue=False)

@@ -32,6 +32,14 @@ def _row(key, value):
     return f"{t(key) + ':':<{LABEL_WIDTH}}{value}"
 
 
+def _describe_source(tags):
+    """„Titel – Interpret (Album, Jahr, Genre)“ aus den Tags des Original-Songs."""
+    head = " – ".join(x for x in (tags.get("title"), tags.get("artist") or tags.get("album_artist")) if x)
+    extra = ", ".join(x for x in (tags.get("album"), tags.get("year"), tags.get("genre")) if x)
+    text = f"{head} ({extra})" if head and extra else head or extra
+    return text or "-"
+
+
 def build_info_text(info, audio_files, seconds):
     mode = info.get("mode", "new")
     cfg = info.get("cfg_scale")
@@ -75,6 +83,7 @@ def build_info_text(info, audio_files, seconds):
         lm = info.get("lyrics_mode")
         lines += ["", t("txt.sec_source"),
                   _row("txt.source", info.get("source_file", "")),
+                  _row("txt.original", _describe_source(info.get("source_tags") or {})),
                   _row("txt.lyrics_mode", t(f"lm.{lm}") if lm else ""),
                   "", t("txt.transcript"), info.get("transcript", "") or "-",
                   "", t("txt.abc_used"), info.get("abc", "") or "-"]
