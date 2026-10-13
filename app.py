@@ -14,6 +14,11 @@ TEMP_DIR = Path(tempfile.mkdtemp(prefix="yue2_app_"))
 os.environ["GRADIO_TEMP_DIR"] = str(TEMP_DIR)
 atexit.register(shutil.rmtree, TEMP_DIR, ignore_errors=True)
 
+# Muss vor dem ersten CUDA-Zugriff gesetzt sein: Ohne Aufräumschwelle hortet PyTorchs Allocator beim
+# VAE-Dekodieren bis zu ~28 GB ungenutzten Cache, obwohl nur 2–7 GB belegt sind.
+for _var in ("PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_HIP_ALLOC_CONF"):
+    os.environ.setdefault(_var, "garbage_collection_threshold:0.6")
+
 import gradio as gr  # noqa: E402
 import soundfile as sf  # noqa: E402
 

@@ -92,6 +92,7 @@ Kernregeln nach dem YuE2-Guide: Der **Style** ist eine kommagetrennte Liste in d
 | `ollama_default_model` | vorausgewähltes Ollama-Modell |
 | `yue2_backend` | `auto` (NVIDIA: `torch` mit CUDA-Graphs, AMD: `torch-eager`), `torch` oder `torch-eager` |
 | `yue2_attention` | `auto` (NVIDIA/Windows: cuDNN, da PyTorch für Windows ohne Flash-Attention gebaut ist; AMD: `sdpa`), `cudnn`, `sdpa` oder `flash` |
+| `yue2_synth_attention` | Attention-Kern der Audio-Synthese: `auto` (NVIDIA: cuDNN, AMD: `sdpa` – spart bei einem 4-Minuten-Song rund 12 GB VRAM und ist mehrfach schneller), `cudnn`, `efficient`, `sdpa` oder `original` (YuE2-Standard) |
 | `yue2_memory_budget_gib` | Obergrenze für das VRAM-Budget (wird automatisch auf den Speicher der Karte begrenzt) |
 | `yue2_low_vram` | Sparmodus: `auto` (unter 22 GB VRAM aktiv), `on` oder `off` |
 | `whisper_model` | Whisper-Modell für die Remake-Texterkennung |
@@ -117,6 +118,7 @@ Die App läuft auch auf AMD-Grafikkarten. Grundlage ist AMDs offizielles PyTorch
 - YuE2 und SheetSage2 sind offiziell nur unter Linux getestet. Unter Windows läuft die App nativ. Zwei Windows-Eigenheiten fängt sie automatisch ab: Flash-Attention fehlt (stattdessen cuDNN), und SheetSage2 lädt Quelldateien per Pfad (sie werden in den Transformers-Modul-Cache gespiegelt). Falls es bei der Generierung trotzdem Fehler gibt, `"yue2_backend": "torch-eager"` versuchen.
 - Richtwerte auf einer RTX 5090: ca. 1 min Song in 40–50 s, Melodie-Analyse ca. 75 s pro Minute Audio.
 - Ollama und YuE2 passen nicht gleichzeitig in 32 GB VRAM. Die App entlädt das Ollama-Modell deshalb vor jeder Generierung automatisch.
+- **VRAM-Bedarf:** Die App rechnet die Audio-Synthese mit einem speichersparenden Attention-Kern (cuDNN) und begrenzt den Cache von PyTorch. Ein 3-Minuten-Song braucht damit auf der RTX 5090 höchstens ~9 GB statt ~28 GB und ist etwa doppelt so schnell fertig (63 s statt 129 s). Der Klang bleibt gleich, nur die Rundung unterscheidet sich minimal.
 - Whisper erkennt Gesang mit lauter Begleitung nicht immer fehlerfrei. Den Text vor dem Erstellen im Feld „Erkannter Originaltext“ prüfen.
 - Bitte die Lizenzen der Modelle beachten (YuE2: siehe `MODEL_LICENSE` im YuE-Repository) und bei Remakes die Rechte am Original.
 

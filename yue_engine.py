@@ -117,6 +117,46 @@ def _patch_graph_attention(gpu):
     cuda_graph.GraphAR.__init__ = __init__
 
 
+def synth_attention_choice(gpu):
+    """Attention-Kern der Audio-Synthese (NAR); None = YuE2-Original.
+
+    YuE2 ruft dort SDPA mit enable_gqa auf. Ohne Flash-Attention (PyTorch für Windows, ROCm) bleibt dafür
+    nur der Math-Kern, der die komplette Attention-Matrix anlegt: Ein 4-Minuten-Song braucht so ~20 GB
+    statt ~8 GB und rechnet 7× länger. Mit aufgefächerten K/V-Köpfen greifen die speichersparenden Kerne.
+    """
+    choice = CONFIG.get("yue2_synth_attention", "auto")
+    if choice == "original":
+        return None
+    if choice == "auto":
+        return "sdpa" if gpu.is_amd else "cudnn"
+    return choice
+
+
+def _patch_synth_attention(gpu):
+    choice = synth_attention_choice(gpu)
+    if choice is None:
+        return
+    import yue2.nar as nar
+    original = nar.attention
+    if getattr(original, "_yue2_app_patched", False):
+        return
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+    kernels = {"cudnn": [SDPBackend.CUDNN_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH],
+               "efficient": [SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]}.get(choice)
+
+    def attention(q, k, v, *, causal=False, backend="sdpa", query_chunk_size=None):
+        if q.shape[1] != k.shape[1]:  # GQA: K/V-Köpfe wie enable_gqa wiederholen
+            groups = q.shape[1] // k.shape[1]
+            k, v = k.repeat_interleave(groups, 1), v.repeat_interleave(groups, 1)
+        if kernels is None or backend != "sdpa" or q.device.type != "cuda":
+            return original(q, k, v, causal=causal, backend=backend, query_chunk_size=query_chunk_size)
+        with sdpa_kernel(kernels, set_priority=True):
+            return original(q, k, v, causal=causal, backend=backend, query_chunk_size=query_chunk_size)
+
+    attention._yue2_app_patched = True
+    nar.attention = attention
+
+
 class YuE2Engine:
     def __init__(self):
         self._pipe = None
@@ -133,6 +173,7 @@ class YuE2Engine:
             from yue2 import YuE2Pipeline
             gpu = gpu_info.current()
             _patch_graph_attention(gpu)
+            _patch_synth_attention(gpu)
             self.progress.set("load", "load_model")
             self._pipe = YuE2Pipeline.from_pretrained(
                 CONFIG["yue2_model"], vae=CONFIG["yue2_vae"], device="cuda", **pipeline_options(gpu))

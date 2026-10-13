@@ -6,6 +6,7 @@
   "yue2_vae": "m-a-p/YuE2-Vae",
   "yue2_backend": "auto",
   "yue2_attention": "auto",
+  "yue2_synth_attention": "auto",
   "yue2_memory_budget_gib": 30,
   "yue2_low_vram": "auto",
   "whisper_model": "openai/whisper-large-v3-turbo",
