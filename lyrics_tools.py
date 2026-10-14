@@ -5,10 +5,12 @@ from i18n import t
 
 ALLOWED_TAGS = ["Intro", "Verse", "Pre-Chorus", "Chorus", "Bridge", "Interlude", "Outro"]
 INSTRUMENTAL_TAGS = {"Intro", "Interlude", "Outro"}
-# Kalibriert am offiziellen YuE2-Beispiel „tonight-awake“ (44 Zeilen ≈ 203 s):
-# eine gesungene Zeile ≈ 2 Takte à 4 Schläge, instrumentale Sektion ≈ 8 s.
+# Kalibriert an sechs mit der App erzeugten neuen Songs (75–135 BPM): YuE2 singt eine Zeile in 4,2–8,7 s,
+# weitgehend unabhängig vom Tempo, und ergänzt oft instrumentale Passagen. Eine instrumentale Sektion ≈ 8 s.
 DEFAULT_BPM = 105
 SECONDS_PER_EMPTY_SECTION = 8
+# Obergrenze für die automatisch gewählte maximale Songlänge (Schieberegler „Max. Songlänge“)
+MAX_SONG_SECONDS = 600
 
 _TAG_RE = re.compile(r"^\s*\[([^\]]+)\]\s*$")
 _WINDOWS_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)),
@@ -47,7 +49,17 @@ def style_bpm(style):
 
 
 def seconds_per_line(style=None):
-    return 8 * 60 / style_bpm(style)
+    """Gesungene Zeile in Sekunden: kleiner Tempo-Anteil (2 Takte) plus fester Sockel."""
+    return 0.3 * 8 * 60 / style_bpm(style) + 4.0
+
+
+def auto_max_seconds(lyrics, style=None):
+    """Großzügige Token-Grenze: YuE2 beendet den Song selbst, die Grenze verhindert nur Endlosschleifen.
+
+    Die Länge schwankt je Genre stark (bis ~1,7× der Schätzung), daher doppelte Schätzung plus Reserve.
+    """
+    secs = 2 * estimate_seconds(lyrics, style) + 60
+    return int(min(MAX_SONG_SECONDS, max(240, -(-secs // 10) * 10)))
 
 
 def estimate_seconds(lyrics, style=None):

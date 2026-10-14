@@ -12,12 +12,13 @@ BASE = CONFIG["ollama_url"].rstrip("/")
 SONG_SCHEMA = {
     "type": "object",
     "properties": {
+        "concept": {"type": "string"},  # zuerst: das Modell plant den Song, bevor es Style und Lyrics schreibt
         "title": {"type": "string"},
         "language": {"type": "string"},
         "style": {"type": "string"},
         "lyrics": {"type": "string"},
     },
-    "required": ["title", "language", "style", "lyrics"],
+    "required": ["concept", "title", "language", "style", "lyrics"],
 }
 
 
@@ -56,17 +57,22 @@ def _parse_json(text):
         raise OllamaError(t("err.bad_json", text=text[:800]))
 
 
-def chat_json(model, system, user, schema=SONG_SCHEMA, temperature=None):
-    """Chat mit erzwungenem JSON-Schema. Denkmodus wird – wenn unterstützt – abgeschaltet."""
+def chat_json(model, system, user, schema=SONG_SCHEMA, temperature=None, think=False):
+    """Chat mit erzwungenem JSON-Schema.
+
+    think=True lässt Denkmodelle (z. B. Qwen) erst überlegen: deutlich bessere Reime und Struktur, aber etwa
+    dreimal langsamer. Modelle ohne Denkmodus laufen unverändert (der Schalter wird dann weggelassen).
+    """
     payload = {
         "model": model,
         "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": user}],
         "format": schema,
         "stream": False,
-        "think": False,
+        "think": bool(think),
+        # Die Überlegungen belegen bis zu ~10 000 Tokens zusätzlich im Kontext.
         "options": {"temperature": CONFIG["ollama_temperature"] if temperature is None else temperature,
-                    "num_ctx": 16384},
+                    "num_ctx": 32768 if think else 16384},
     }
     try:
         content = _chat(payload)

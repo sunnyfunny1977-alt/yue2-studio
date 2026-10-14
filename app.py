@@ -29,15 +29,27 @@ import sysmon  # noqa: E402
 import ui_theme as ui  # noqa: E402
 from exporter import save_song  # noqa: E402
 from i18n import t  # noqa: E402
-from lyrics_tools import (estimate_seconds, fmt_duration, issues_text, lint, normalize_lyrics,  # noqa: E402
-                          sanitize_filename, structure_hint, target_lines)
+from lyrics_tools import (auto_max_seconds, estimate_seconds, fmt_duration, issues_text, lint,  # noqa: E402
+                          normalize_lyrics, sanitize_filename, structure_hint, target_lines)
 from settings import CONFIG, path, prompt  # noqa: E402
 from yue_engine import ENGINE, SAMPLE_RATE, Cancelled  # noqa: E402
 
 # Sprachneutrale Werte; die Anzeigenamen kommen aus i18n.
 MODE_NEW, MODE_REMAKE = "new", "remake"
 LYRIC_LANGS = ["auto", "German", "English", "Spanish", "French", "Italian", "Portuguese", "Dutch",
-               "Japanese", "Chinese", "Korean"]
+               "Turkish", "Polish", "Russian", "Greek", "Arabic", "Japanese", "Chinese", "Korean"]
+# Zweite Sprache eines mehrsprachigen Songs und wo sie eingesetzt wird
+MIX_USES = ["chorus", "bridge", "chorus_bridge", "lines", "idea"]
+MIX_RULES = {
+    "chorus": "every [Chorus] section (write each chorus repetition identically in {second}); "
+              "all other sections stay in the main language",
+    "bridge": "the [Bridge] section; all other sections stay in the main language",
+    "chorus_bridge": "every [Chorus] and the [Bridge]; all other sections stay in the main language",
+    "lines": "whole single lines mixed into the sections, mostly in the chorus (e.g. every second chorus line); "
+             "about a quarter of all sung lines. Each line is either completely {second} or completely in the main "
+             "language – never both languages inside one line",
+    "idea": "the parts the song idea / user wish asks for; if it does not say, use it for every [Chorus]",
+}
 LYRICS_MODES = ["keep", "rewrite", "translate"]
 COTS = ["full", "melody", "off"]
 
@@ -58,8 +70,30 @@ def cot_choices():
     return [(t(f"cot.{code}"), code) for code in COTS]
 
 
+def lang2_choices():
+    return [(t("lang.none"), "none")] + [(t(f"lang.{code}"), code) for code in LYRIC_LANGS[1:]]
+
+
+def mix_choices():
+    return [(t(f"mix.{code}"), code) for code in MIX_USES]
+
+
 def lyric_language(code):
     return "" if code in (None, "", "auto") else code
+
+
+def mix_instruction(main, second_code, use):
+    """Zusatz für den Masterprompt bei zwei Sprachen; leer, wenn der Song einsprachig bleibt."""
+    second = "" if second_code in (None, "", "none") else second_code
+    if not second or second == main:
+        return ""
+    rule = MIX_RULES.get(use, MIX_RULES["chorus"]).format(second=second)
+    return (f"Bilingual song: main language {main}, second language {second}. Use no third language.\n"
+            f"Write in {second} (native script): {rule}.\n")
+
+
+def mix_changed(second_code):
+    return gr.update(interactive=second_code not in (None, "", "none"))
 
 
 # ---------------------------------------------------------------- Hilfen
@@ -100,33 +134,44 @@ def require_model(model):
         raise gr.Error(t("err.no_model"))
 
 
-def song_outputs(data, max_secs=None):
+def song_outputs(data, max_secs=None, auto_max=False):
     """Gemeinsame Ausgabe aller Erstellen-/Korrigieren-Aktionen."""
-    lyrics = normalize_lyrics(data["lyrics"])
+    # Manche Modelle maskieren Zeilenumbrüche doppelt – ein wörtliches „\n“ würde YuE2 sonst mitsingen.
+    lyrics = normalize_lyrics(data["lyrics"].replace("\\n", "\n"))
     style = " ".join(data["style"].split())
     out = [data["title"], style, lyrics, data["language"], ui.lint_html(style, lyrics), data["title"]]
+    if auto_max:
+        max_secs = auto_max_seconds(lyrics, style)
     out.append(gr.update(value=max_secs) if max_secs else gr.update())
+    out.append(data.get("concept", ""))
     return out
+
+
+def concept_language():
+    """Das Songkonzept schreibt Ollama in der Sprache der Oberfläche."""
+    return "German" if i18n.get_lang() == "de" else "English"
 
 
 # ---------------------------------------------------------------- Neuer Song
 
-def create_new(idea, language_code, target_secs, model):
+def create_new(idea, language_code, second_code, mix_use, target_secs, model, think):
     require_model(model)
     if not (idea or "").strip():
         raise gr.Error(t("err.no_idea"))
     lang = lyric_language(language_code)
     target_secs = int(target_secs)
-    user = (f"Song idea: {idea.strip()}\n"
+    user = (f"Language for `concept`: {concept_language()}\n"
+            f"Song idea: {idea.strip()}\n"
             f"Target language of the lyrics: {lang or 'the language the idea is written in'}\n"
+            + mix_instruction(lang or "the language the idea is written in", second_code, mix_use) +
             f"Target length: about {target_secs} seconds ({fmt_duration(target_secs)} min)\n"
             f"Suggested structure: {structure_hint(target_secs)}\n"
             f"Aim for about {target_lines(target_secs)} sung lines in total (≈ 2 bars per line).")
     try:
-        data = llm.chat_json(model, prompt("master_new.md"), user)
+        data = llm.chat_json(model, prompt("master_new.md"), user, think=think)
     except llm.OllamaError as e:
         raise gr.Error(str(e))
-    return song_outputs(data, max_secs=min(600, target_secs + 90))
+    return song_outputs(data, auto_max=True)
 
 
 # ---------------------------------------------------------------- Remake
@@ -216,7 +261,8 @@ def analyze_remake(audio_file, current_text, lyrics_source):
            gr.update(value=min(600, int(duration) + 30)), duration)
 
 
-def create_remake(transcript, lyrics_mode, target_lang_code, style_wish, abc, model, src_duration, lyrics_source):
+def create_remake(transcript, lyrics_mode, target_lang_code, second_code, mix_use, style_wish, abc, model,
+                  src_duration, lyrics_source, think):
     require_model(model)
     if not (abc or "").strip():
         raise gr.Error(t("err.no_abc"))
@@ -227,8 +273,11 @@ def create_remake(transcript, lyrics_mode, target_lang_code, style_wish, abc, mo
         raise gr.Error(t("err.no_target_lang"))
     origin = ("online lyrics database (exact wording, no section tags)" if lyrics_source
               else "automatic speech recognition of the vocals (may contain recognition errors)")
-    user = (f"Lyrics mode: {lyrics_mode}\n"
+    user = (f"Language for `concept`: {concept_language()}\n"
+            f"Lyrics mode: {lyrics_mode}\n"
             + (f"Target language: {target}\n" if lyrics_mode == "translate" else "")
+            + mix_instruction(target if lyrics_mode == "translate" else "the language of the original lyrics",
+                              second_code, mix_use)
             + f"User wish for the new style / idea: {(style_wish or '').strip() or '(none)'}\n"
             f"Original song length: about {int(src_duration or 0)} seconds\n"
             f"Original score header (tempo, meter, key): {abc_header(abc) or 'unknown'}\n"
@@ -236,7 +285,7 @@ def create_remake(transcript, lyrics_mode, target_lang_code, style_wish, abc, mo
             f"Source of the original lyrics: {origin}\n\n"
             f"Original lyrics:\n{(transcript or '').strip() or '(no vocals recognised)'}")
     try:
-        data = llm.chat_json(model, prompt("master_remake.md"), user)
+        data = llm.chat_json(model, prompt("master_remake.md"), user, think=think)
     except llm.OllamaError as e:
         raise gr.Error(str(e))
     return song_outputs(data)
@@ -248,15 +297,17 @@ def check(style, lyrics):
     return ui.lint_html(style, lyrics) or ui.notice("warn", t("check.empty_t"), t("check.empty_b"))
 
 
-def correct(title, style, lyrics, request, model):
+def correct(concept, title, style, lyrics, request, model, think):
     require_model(model)
     if not (style or lyrics):
         raise gr.Error(t("err.nothing_to_correct"))
     user = (f"Correction request from the user: {(request or '').strip() or '(none – only fix rule violations)'}\n\n"
             f"Automatic check warnings:\n{issues_text(style, lyrics)}\n\n"
+            f"Language for `concept`: {concept_language()}\n"
+            f"Current concept: {(concept or '').strip() or '(none)'}\n\n"
             f"Current title: {title}\n\nCurrent style:\n{style}\n\nCurrent lyrics:\n{lyrics}")
     try:
-        data = llm.chat_json(model, prompt("master_correct.md"), user, temperature=0.4)
+        data = llm.chat_json(model, prompt("master_correct.md"), user, temperature=0.4, think=think)
     except llm.OllamaError as e:
         raise gr.Error(str(e))
     return song_outputs(data)
@@ -269,7 +320,7 @@ def normalize(style, lyrics):
 
 # ---------------------------------------------------------------- Generierung
 
-def generate(mode, title, style, lyrics, language, cot, seed, random_seed, cfg, max_secs, abc,
+def generate(mode, concept, title, style, lyrics, language, cot, seed, random_seed, cfg, max_secs, abc,
              model, idea, style_wish, transcript, lyrics_mode, source_file, source_meta, lyrics_origin):
     errors, _ = lint(style, lyrics)
     if errors:
@@ -280,6 +331,9 @@ def generate(mode, title, style, lyrics, language, cot, seed, random_seed, cfg, 
         cot, use_abc = "melody", abc
     else:
         use_abc = None
+        # Nach Bearbeiten/Korrigieren kann der Text länger geworden sein: Grenze nie unter den Bedarf fallen lassen,
+        # sonst bricht YuE2 mitten im Song ab („Token-Limit erreicht“).
+        max_secs = max(int(max_secs), auto_max_seconds(lyrics, style))
     seed = random.randrange(0, 2**31) if random_seed else int(seed or 0)
     cfg_scale = None if cfg is None or abs(float(cfg) - 1.0) < 1e-9 else float(cfg)
 
@@ -314,7 +368,7 @@ def generate(mode, title, style, lyrics, language, cot, seed, random_seed, cfg, 
     info = {
         **meta, "title": title, "language": language, "style": style, "lyrics": lyrics,
         "mode": mode, "created": f"{datetime.now():%Y-%m-%d %H:%M:%S}", "llm_model": model,
-        "idea": idea if mode == MODE_NEW else style_wish,
+        "idea": idea if mode == MODE_NEW else style_wish, "concept": (concept or "").strip(),
     }
     if mode == MODE_REMAKE:
         tags = {k: v for k, v in ((source_meta or {}).get("tags") or {}).items() if k != "cover"}
@@ -362,7 +416,7 @@ def build_ui():
         registry.append((component, spec))
         return component
 
-    with gr.Blocks(title="YuE2 Studio", theme=ui.THEME, css=ui.CSS, js=ui.FORCE_DARK_JS,
+    with gr.Blocks(title="YuE2 Studio", theme=ui.THEME, css=ui.CSS, js=ui.FORCE_DARK_JS, fill_width=True,
                    head=ui.head_html(i18n.get_lang())) as demo:
         # --- Startdialog: Sprache wählen (nur beim allerersten Start)
         # Unsichtbar gebaut; on_load blendet ihn nur ein, solange noch keine Sprache gewählt wurde (kein Aufblitzen).
@@ -385,31 +439,38 @@ def build_ui():
         lyric_results = gr.State([])  # Treffer der Online-Lyrics-Suche
         lyrics_source = gr.State(None)  # gesetzt, wenn der Originaltext aus der Online-Suche stammt
 
-        with gr.Row(equal_height=False):
-            # ================= Linke Spalte: Komposition =================
-            with gr.Column(scale=7, min_width=460):
+        # Drei Spalten: Idee | Feinschliff | Generieren + Speichern (bricht auf schmalen Fenstern um)
+        with gr.Row(equal_height=False, elem_id="main-row"):
+            # ================= Spalte 1: Idee =================
+            with gr.Column(scale=4, min_width=320):
                 with gr.Column(elem_classes="card"):
                     tr(gr.HTML(ui.step(1, "step1.title", "step1.sub")),
                        value=lambda: ui.step(1, "step1.title", "step1.sub"))
-                    with gr.Row():
-                        mode = tr(gr.Radio(mode_choices(), value=MODE_NEW, show_label=False, container=False,
-                                           elem_id="mode-switch", elem_classes="seg", scale=5), choices=mode_choices)
-                        with gr.Column(scale=3, min_width=220):
-                            with gr.Row():
-                                model_dd = tr(gr.Dropdown(models, value=model_value, label=t("model.label"),
-                                                          scale=5, min_width=160, elem_id="model-dd"),
-                                              label="model.label")
-                                refresh_btn = gr.Button("↻", scale=0, min_width=46, elem_classes="icon-btn")
+                    mode = tr(gr.Radio(mode_choices(), value=MODE_NEW, show_label=False, container=False,
+                                       elem_id="mode-switch", elem_classes="seg"), choices=mode_choices)
+                    with gr.Row(equal_height=True, elem_classes="model-row"):
+                        model_dd = tr(gr.Dropdown(models, value=model_value, label=t("model.label"),
+                                                  scale=5, min_width=160, elem_id="model-dd"),
+                                      label="model.label")
+                        refresh_btn = gr.Button("↻", scale=0, min_width=40, size="sm", elem_classes="icon-btn")
+                    think = tr(gr.Checkbox(value=bool(CONFIG.get("ollama_think", True)), label=t("think.label"),
+                                           container=False, elem_id="think-cb"), label="think.label")
 
                     # --- Neuer Song
                     with gr.Column(visible=True) as new_group:
-                        idea = tr(gr.Textbox(label=t("idea.label"), lines=4, elem_id="idea-box",
+                        idea = tr(gr.Textbox(label=t("idea.label"), lines=4, max_lines=8, elem_id="idea-box",
                                              placeholder=t("idea.ph")), label="idea.label", placeholder="idea.ph")
                         with gr.Row():
                             language = tr(gr.Dropdown(lang_choices(), value="auto", label=t("language.label")),
                                           choices=lang_choices, label="language.label")
                             target_secs = tr(gr.Slider(60, 480, value=180, step=15, label=t("target.label")),
                                              label="target.label")
+                        with gr.Row():
+                            language2 = tr(gr.Dropdown(lang2_choices(), value="none", label=t("lang2.label")),
+                                           choices=lang2_choices, label="lang2.label")
+                            mix_use = tr(gr.Dropdown(mix_choices(), value="chorus", label=t("mix.label"),
+                                                     interactive=False),
+                                           choices=mix_choices, label="mix.label")
                         create_new_btn = tr(gr.Button(t("create.btn"), variant="primary", elem_classes="create-btn"),
                                             value="create.btn")
 
@@ -420,66 +481,82 @@ def build_ui():
                         track_box = gr.HTML(elem_classes="html-slot")
                         with gr.Accordion(t("lyr.acc"), open=False) as lyr_acc:
                             with gr.Row(equal_height=True):
-                                lyr_title = tr(gr.Textbox(label=t("lyr.title"), scale=3, max_lines=1), label="lyr.title")
-                                lyr_artist = tr(gr.Textbox(label=t("lyr.artist"), scale=3, max_lines=1), label="lyr.artist")
-                                lyr_search_btn = tr(gr.Button(t("lyr.search_btn"), scale=1, min_width=120,
-                                                              variant="secondary"), value="lyr.search_btn")
+                                lyr_title = tr(gr.Textbox(label=t("lyr.title"), max_lines=1, min_width=120),
+                                               label="lyr.title")
+                                lyr_artist = tr(gr.Textbox(label=t("lyr.artist"), max_lines=1, min_width=120),
+                                                label="lyr.artist")
+                            lyr_search_btn = tr(gr.Button(t("lyr.search_btn"), size="sm", variant="secondary"),
+                                                value="lyr.search_btn")
                             lyr_choice = tr(gr.Dropdown([], label=t("lyr.results"), elem_id="lyr-dd"),
                                             label="lyr.results")
-                            lyr_use_btn = tr(gr.Button(t("lyr.use_btn"), variant="primary"), value="lyr.use_btn")
+                            lyr_use_btn = tr(gr.Button(t("lyr.use_btn"), size="sm", variant="primary"),
+                                             value="lyr.use_btn")
                             lyr_status = gr.HTML(elem_classes="html-slot")
                             lyr_hint = tr(gr.HTML(f'<div class="lyr-hint">{t("lyr.hint")}</div>'),
                                           value=lambda: f'<div class="lyr-hint">{t("lyr.hint")}</div>')
                         tr(lyr_acc, label="lyr.acc")
-                        analyze_btn = tr(gr.Button(t("analyze.btn"), variant="secondary", elem_classes="ghost-btn"),
+                        analyze_btn = tr(gr.Button(t("analyze.btn"), size="sm", variant="secondary",
+                                                   elem_classes="ghost-btn"),
                                          value="analyze.btn")
                         remake_status = gr.HTML(elem_classes="html-slot")
-                        transcript = tr(gr.Textbox(label=t("transcript.label"), lines=7), label="transcript.label")
+                        transcript = tr(gr.Textbox(label=t("transcript.label"), lines=6, max_lines=12),
+                                        label="transcript.label")
                         with gr.Accordion(t("abc.acc"), open=False) as abc_acc:
                             abc = gr.Textbox(lines=12, show_label=False)
                         tr(abc_acc, label="abc.acc")
                         lyrics_mode = tr(gr.Radio(lmode_choices(), value="keep", label=t("lmode.label"),
-                                                  elem_classes="seg"), choices=lmode_choices, label="lmode.label")
+                                                  elem_classes="seg seg-sm"), choices=lmode_choices, label="lmode.label")
+                        style_wish = tr(gr.Textbox(label=t("wish.label"), lines=2,
+                                                   placeholder=t("wish.ph")), label="wish.label", placeholder="wish.ph")
+                        remake_lang = tr(gr.Dropdown(lang_choices(), value="auto", label=t("rlang.label")),
+                                         choices=lang_choices, label="rlang.label")
                         with gr.Row():
-                            style_wish = tr(gr.Textbox(label=t("wish.label"), lines=2, scale=3,
-                                                       placeholder=t("wish.ph")), label="wish.label", placeholder="wish.ph")
-                            remake_lang = tr(gr.Dropdown(lang_choices(), value="auto", scale=1, min_width=150,
-                                                         label=t("rlang.label")), choices=lang_choices, label="rlang.label")
+                            remake_lang2 = tr(gr.Dropdown(lang2_choices(), value="none", label=t("lang2.label")),
+                                              choices=lang2_choices, label="lang2.label")
+                            remake_mix = tr(gr.Dropdown(mix_choices(), value="chorus", label=t("mix.label"),
+                                                        interactive=False),
+                                              choices=mix_choices, label="mix.label")
                         create_remake_btn = tr(gr.Button(t("create.btn"), variant="primary", elem_classes="create-btn"),
                                                value="create.btn")
 
+            # ================= Spalte 2: Feinschliff =================
+            with gr.Column(scale=5, min_width=400):
                 with gr.Column(elem_classes="card"):
                     tr(gr.HTML(ui.step(2, "step2.title", "step2.sub")),
                        value=lambda: ui.step(2, "step2.title", "step2.sub"))
+                    concept = tr(gr.Textbox(label=t("concept.label"), lines=2, max_lines=5, elem_id="concept-box",
+                                            placeholder=t("concept.ph")), label="concept.label", placeholder="concept.ph")
                     title = tr(gr.Textbox(label=t("title.label"), placeholder=t("title.ph")),
                                label="title.label", placeholder="title.ph")
                     style = tr(gr.Textbox(label=t("style.label"), lines=2, elem_id="style-box", placeholder=t("style.ph")),
                                label="style.label", placeholder="style.ph")
-                    lyrics = tr(gr.Textbox(label=t("lyrics.label"), lines=20, elem_id="lyrics-box",
+                    lyrics = tr(gr.Textbox(label=t("lyrics.label"), lines=14, max_lines=14, elem_id="lyrics-box",
                                            placeholder="[Verse]\n…\n\n[Chorus]\n…"), label="lyrics.label")
                     lint_box = gr.HTML(elem_classes="html-slot")
                     with gr.Row():
-                        check_btn = tr(gr.Button(t("check.btn"), elem_classes="ghost-btn"), value="check.btn")
-                        normalize_btn = tr(gr.Button(t("normalize.btn"), elem_classes="ghost-btn"), value="normalize.btn")
-                    with gr.Row(equal_height=True):
-                        correction = tr(gr.Textbox(label=t("correction.label"), scale=4, placeholder=t("correction.ph")),
+                        check_btn = tr(gr.Button(t("check.btn"), size="sm", min_width=100, elem_classes="ghost-btn"), value="check.btn")
+                        normalize_btn = tr(gr.Button(t("normalize.btn"), size="sm", min_width=100, elem_classes="ghost-btn"),
+                                           value="normalize.btn")
+                    with gr.Row(equal_height=True, elem_classes="correct-row"):
+                        correction = tr(gr.Textbox(label=t("correction.label"), scale=4, lines=2, max_lines=4,
+                                                   placeholder=t("correction.ph")),
                                         label="correction.label", placeholder="correction.ph")
-                        correct_btn = tr(gr.Button(t("correct.btn"), scale=1, min_width=170, variant="secondary"),
-                                         value="correct.btn")
+                        correct_btn = tr(gr.Button(t("correct.btn"), scale=0, min_width=180, size="sm",
+                                                   variant="secondary"), value="correct.btn")
 
-            # ================= Rechte Spalte: Studio =================
-            with gr.Column(scale=5, min_width=380):
+            # ================= Spalte 3: Generieren + Speichern =================
+            with gr.Column(scale=4, min_width=320):
                 with gr.Column(elem_classes="card"):
                     tr(gr.HTML(ui.step(3, "step3.title", "step3.sub")),
                        value=lambda: ui.step(3, "step3.title", "step3.sub"))
-                    gen_btn = tr(gr.Button(t("gen.btn"), variant="primary", size="lg", elem_id="gen-btn"),
+                    gen_btn = tr(gr.Button(t("gen.btn"), variant="primary", elem_id="gen-btn"),
                                  value="gen.btn")
                     with gr.Row():
-                        cancel_btn = tr(gr.Button(t("cancel.btn"), variant="stop", size="sm"), value="cancel.btn")
-                        unload_btn = tr(gr.Button(t("unload.btn"), size="sm", elem_classes="ghost-btn"),
+                        cancel_btn = tr(gr.Button(t("cancel.btn"), variant="stop", size="sm", min_width=100), value="cancel.btn")
+                        unload_btn = tr(gr.Button(t("unload.btn"), size="sm", min_width=100, elem_classes="ghost-btn"),
                                         value="unload.btn")
-                    gen_status = gr.HTML(ui.idle_html(), elem_classes="html-slot")
-                    player = tr(gr.Audio(label=t("player.label"), type="filepath", interactive=False,
+                    gen_status = gr.HTML(ui.idle_html(), elem_id="gen-status", elem_classes="html-slot")
+                    player = tr(gr.Audio(label=t("player.label"), type="filepath", interactive=False, elem_id="player",
                                          waveform_options=ui.WAVEFORM), label="player.label")
                     with gr.Accordion(t("adv.acc"), open=False) as adv_acc:
                         cot = tr(gr.Dropdown(cot_choices(), value="full", label=t("cot.label")),
@@ -499,7 +576,7 @@ def build_ui():
                        value=lambda: ui.step(4, "step4.title", "step4.sub"))
                     save_name = tr(gr.Textbox(label=t("savename.label"), placeholder=t("savename.ph")),
                                    label="savename.label", placeholder="savename.ph")
-                    save_fmt = tr(gr.Radio(["MP3", "FLAC"], value="MP3", label=t("fmt.label"), elem_classes="seg"),
+                    save_fmt = tr(gr.Radio(["MP3", "FLAC"], value="MP3", label=t("fmt.label"), elem_classes="seg seg-sm"),
                                   label="fmt.label")
                     save_dir = tr(gr.Textbox(value=str(path("output_dir")), label=t("savedir.label")),
                                   label="savedir.label")
@@ -565,8 +642,11 @@ def build_ui():
         refresh_btn.click(refresh_models, outputs=[model_dd, hero])
         mode.change(lambda m: (gr.update(visible=m == MODE_NEW), gr.update(visible=m == MODE_REMAKE)),
                     inputs=mode, outputs=[new_group, remake_group])
-        song_out = [title, style, lyrics, language_state, lint_box, save_name, max_secs]
-        create_new_btn.click(create_new, inputs=[idea, language, target_secs, model_dd], outputs=song_out)
+        song_out = [title, style, lyrics, language_state, lint_box, save_name, max_secs, concept]
+        create_new_btn.click(create_new, inputs=[idea, language, language2, mix_use, target_secs, model_dd, think],
+                             outputs=song_out)
+        language2.change(mix_changed, inputs=language2, outputs=mix_use, show_progress="hidden")
+        remake_lang2.change(mix_changed, inputs=remake_lang2, outputs=remake_mix, show_progress="hidden")
         source.change(load_source_info, inputs=source,
                       outputs=[track_box, source_info, lyr_title, lyr_artist, lyr_choice, lyric_results, lyrics_source],
                       show_progress="hidden")
@@ -576,15 +656,15 @@ def build_ui():
         analyze_btn.click(analyze_remake, inputs=[source, transcript, lyrics_source],
                           outputs=[abc, transcript, remake_status, max_secs, src_duration], show_progress="hidden")
         create_remake_btn.click(create_remake,
-                                inputs=[transcript, lyrics_mode, remake_lang, style_wish, abc, model_dd, src_duration,
-                                        lyrics_source],
+                                inputs=[transcript, lyrics_mode, remake_lang, remake_lang2, remake_mix, style_wish, abc, model_dd, src_duration,
+                                        lyrics_source, think],
                                 outputs=song_out)
         check_btn.click(check, inputs=[style, lyrics], outputs=lint_box)
         normalize_btn.click(normalize, inputs=[style, lyrics], outputs=[lyrics, lint_box])
-        correct_btn.click(correct, inputs=[title, style, lyrics, correction, model_dd], outputs=song_out)
+        correct_btn.click(correct, inputs=[concept, title, style, lyrics, correction, model_dd, think], outputs=song_out)
         title.change(lambda value: value, inputs=title, outputs=save_name)
         gen_event = gen_btn.click(generate,
-                                  inputs=[mode, title, style, lyrics, language_state, cot, seed, random_seed, cfg,
+                                  inputs=[mode, concept, title, style, lyrics, language_state, cot, seed, random_seed, cfg,
                                           max_secs, abc, model_dd, idea, style_wish, transcript, lyrics_mode, source,
                                           source_info, lyrics_source],
                                   outputs=[player, gen_status, result_state, seed], show_progress="hidden")

@@ -78,7 +78,10 @@ FORCE_DARK_JS = """
 
 CSS = """
 body { background-attachment: fixed !important; }
-.gradio-container { max-width: 1480px !important; margin: 0 auto !important; padding: 26px 26px 48px !important;
+/* Scrollleiste immer einplanen: sonst ändert sich beim Wachsen/Schrumpfen der Seite die Breite aller Spalten
+   und die Textfelder im Feinschliff brechen neu um. */
+html { overflow-y: scroll; scrollbar-gutter: stable; }
+.gradio-container { max-width: 1760px !important; margin: 0 auto !important; padding: 20px 22px 40px !important;
   box-sizing: border-box !important; }
 footer { display: none !important; }
 
@@ -89,7 +92,7 @@ footer { display: none !important; }
   border: 1px solid rgba(255,255,255,.09); box-shadow: 0 20px 60px -30px rgba(124,58,237,.6); }
 .hero::after { content: ""; position: absolute; inset: -40% -10% auto auto; width: 420px; height: 420px;
   background: radial-gradient(circle, rgba(34,211,238,.18), transparent 65%); pointer-events: none; }
-.hero-left { display: flex; align-items: center; gap: 18px; z-index: 1; }
+.hero-left { display: flex; align-items: center; gap: 18px; z-index: 1; flex: 1 1 380px; min-width: 0; }
 .logo { width: 58px; height: 58px; border-radius: 18px; background: """ + GRADIENT + """;
   display: flex; align-items: flex-end; justify-content: center; gap: 4px; padding: 13px 0;
   box-shadow: 0 10px 30px -8px rgba(124,58,237,.8); }
@@ -120,50 +123,68 @@ footer { display: none !important; }
    verschiebt dadurch Gradios Dropdown-Listen nach unten. Stattdessen ein deckenderer Hintergrund. */
 .card { background: linear-gradient(180deg, rgba(20,20,36,.86), rgba(14,14,26,.86)) !important;
   border: 1px solid rgba(255,255,255,.08) !important;
-  border-radius: 22px !important; padding: 20px 22px 22px !important;
+  border-radius: 20px !important; padding: 16px 18px 18px !important;
   box-shadow: 0 24px 60px -36px rgba(0,0,0,.9); }
 .card .form, .card .gr-form { background: transparent !important; border: none !important; box-shadow: none !important;
-  gap: 12px !important; }
+  gap: 10px !important; }
 .card .block { background: transparent !important; }
+#main-row { gap: 16px !important; }
+#main-row > .column { gap: 16px !important; }
+/* Feste Spaltenanteile (4 : 5 : 4) per Grid: minmax(0, …) verhindert, dass Inhalte – z. B. die sich ständig
+   ändernde Fortschrittsanzeige – eine Spalte verbreitern und die anderen zusammendrücken. */
+@media (min-width: 1100px) {
+  #main-row { display: grid !important; grid-template-columns: minmax(0, 4fr) minmax(0, 5fr) minmax(0, 4fr);
+    align-items: start; }
+  #main-row > .column { min-width: 0 !important; width: auto !important; }
+}
 .card .block:has(> .label-wrap) { overflow: visible !important; }
-.step { display: flex; align-items: center; gap: 14px; margin-bottom: 4px; }
-.step-num { font-family: var(--font-mono); font-size: 13px; font-weight: 700; color: #fff; width: 38px; height: 38px;
-  border-radius: 12px; display: flex; align-items: center; justify-content: center; background: """ + GRADIENT + """;
+.step { display: flex; align-items: center; gap: 12px; margin-bottom: 2px; }
+.step-num { font-family: var(--font-mono); font-size: 12px; font-weight: 700; color: #fff; width: 32px; height: 32px;
+  border-radius: 10px; display: flex; align-items: center; justify-content: center; background: """ + GRADIENT + """;
   box-shadow: 0 6px 20px -6px rgba(124,58,237,.8); flex-shrink: 0; }
-.step-title { font-size: 18px; font-weight: 750; color: #fff; letter-spacing: -.01em; }
-.step-sub { font-size: 13px; color: #9b99bd; margin-top: 1px; }
-.card [data-testid="block-info"] { font-size: 11.5px !important; font-weight: 650 !important;
+.step-title { font-size: 16.5px; font-weight: 750; color: #fff; letter-spacing: -.01em; }
+.step-sub { font-size: 12.5px; color: #9b99bd; margin-top: 1px; }
+.card [data-testid="block-info"] { font-size: 11px !important; font-weight: 650 !important;
   letter-spacing: .07em; text-transform: uppercase; color: #a9a6d6 !important; }
-.card textarea, .card input[type=text], .card input[type=number] { font-size: 14.5px !important; }
-#lyrics-box textarea { font-family: var(--font-mono) !important; font-size: 13.5px !important; line-height: 1.7 !important; }
-#style-box textarea { font-size: 14px !important; line-height: 1.55 !important; }
-#idea-box textarea { font-size: 16px !important; line-height: 1.6 !important; }
+.card textarea, .card input[type=text], .card input[type=number] { font-size: 14px !important; }
+#lyrics-box textarea { font-family: var(--font-mono) !important; font-size: 13px !important; line-height: 1.6 !important; }
+#style-box textarea, #concept-box textarea { font-size: 13.5px !important; line-height: 1.5 !important; }
+#idea-box textarea { font-size: 15px !important; line-height: 1.55 !important; }
+/* Checkboxen ohne Rahmen-Block: Denkmodus, Zufalls-Seed, Überschreiben */
+#think-cb { padding: 0 2px !important; }
+.card label:has(> input[type=checkbox]) { font-size: 13px !important; }
 
 /* ---------- Segment-Schalter (Modus, Format) ---------- */
-.seg .wrap { display: grid !important; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 6px !important;
-  background: rgba(0,0,0,.35); padding: 6px; border-radius: 16px; border: 1px solid rgba(255,255,255,.08); }
-.seg label { justify-content: center !important; border-radius: 12px !important; padding: 11px 14px !important;
+.seg .wrap { display: grid !important; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 4px !important;
+  background: rgba(0,0,0,.35); padding: 4px; border-radius: 14px; border: 1px solid rgba(255,255,255,.08); }
+.seg label { justify-content: center !important; border-radius: 10px !important; padding: 8px 12px !important;
+  font-size: 13.5px !important;
   background: transparent !important; border: 1px solid transparent !important; box-shadow: none !important;
   font-weight: 650 !important; color: #b9b7da !important; cursor: pointer; transition: all .18s ease; }
 .seg label:hover { background: rgba(255,255,255,.05) !important; color: #fff !important; }
 .seg label.selected { background: """ + GRADIENT + """ !important; color: #fff !important;
   box-shadow: 0 8px 24px -10px rgba(124,58,237,.9) !important; }
 .seg input[type=radio] { display: none !important; }
-#mode-switch label { font-size: 15px !important; padding: 14px !important; }
+#mode-switch label { font-size: 14px !important; padding: 9px 12px !important; }
+.seg-sm label { padding: 6px 10px !important; font-size: 13px !important; }
 
 /* ---------- Buttons ---------- */
-#gen-btn { min-height: 60px; font-size: 17px !important; font-weight: 750 !important; letter-spacing: .01em;
+#gen-btn { min-height: 48px; font-size: 15.5px !important; font-weight: 750 !important; letter-spacing: .01em;
   background-size: 200% 200% !important; animation: shine 6s ease infinite; }
 @keyframes shine { 0%,100% { background-position: 0% 50% } 50% { background-position: 100% 50% } }
-.create-btn { min-height: 52px; font-size: 15.5px !important; font-weight: 700 !important; }
+.create-btn { min-height: 42px; font-size: 14.5px !important; font-weight: 700 !important; }
 .ghost-btn { font-weight: 600 !important; }
+.card button.sm { font-size: 13px !important; padding: 7px 10px !important; min-height: 34px; white-space: nowrap; }
+.model-row { align-items: flex-end !important; }
+.correct-row { align-items: flex-end !important; }
+.correct-row button { min-height: 40px; white-space: nowrap; }
 /* Lange Ollama-Modellnamen nicht mehrfach umbrechen: Liste und Einträge breiter als das Feld */
 #model-dd ul.options { min-width: 380px !important; }
 #model-dd ul.options li { width: auto !important; }
-.icon-btn { min-width: 46px !important; max-width: 46px !important; font-size: 18px !important; }
+.icon-btn { min-width: 40px !important; max-width: 40px !important; min-height: 40px; font-size: 16px !important; }
 
 /* ---------- Fortschritt ---------- */
-.prog { padding: 16px 18px; border-radius: 18px; background: rgba(0,0,0,.30); border: 1px solid rgba(255,255,255,.08); }
+.prog { padding: 13px 15px; border-radius: 16px; background: rgba(0,0,0,.30); border: 1px solid rgba(255,255,255,.08); }
 .prog-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; }
 .prog-stage { font-weight: 700; color: #fff; font-size: 15px; }
 .prog-pct { font-family: var(--font-mono); font-weight: 700; color: #c4b5fd; font-size: 15px; }
@@ -172,25 +193,39 @@ footer { display: none !important; }
   background-size: 300% 100%; animation: flow 2.2s linear infinite; transition: width .8s ease;
   box-shadow: 0 0 18px rgba(139,92,246,.7); }
 @keyframes flow { from { background-position: 0% 0 } to { background-position: 300% 0 } }
-.prog-steps { display: flex; gap: 6px; margin: 14px 0 12px; flex-wrap: wrap; }
-.ps { flex: 1; text-align: center; font-size: 11.5px; font-weight: 650; padding: 6px 4px; border-radius: 10px;
-  color: #77759a; background: rgba(255,255,255,.03); border: 1px solid rgba(255,255,255,.05); min-width: 62px; }
+.prog-steps { display: flex; gap: 5px; margin: 12px 0 10px; flex-wrap: nowrap; }
+.ps { flex: 1 1 0; text-align: center; font-size: 11px; font-weight: 650; padding: 6px 3px; border-radius: 9px;
+  color: #77759a; background: rgba(255,255,255,.03); border: 1px solid rgba(255,255,255,.05); min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ps.done { color: #a7f3d0; background: rgba(52,211,153,.10); border-color: rgba(52,211,153,.25); }
 .ps.active { color: #fff; background: rgba(139,92,246,.22); border-color: rgba(139,92,246,.55);
   animation: pulse 1.6s ease-in-out infinite; }
 @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(139,92,246,.0) } 50% { box-shadow: 0 0 0 4px rgba(139,92,246,.18) } }
 .prog.idle { display: flex; gap: 14px; align-items: center; color: #9b99bd; font-size: 14px; }
+/* Feste Mindesthöhen: Bereit → Fortschritt → Ergebnis und leerer → geladener Player springen nicht mehr */
+#gen-status { min-height: 158px; }
+#gen-status { contain: inline-size; min-width: 0; max-width: 100%; overflow: hidden; }
+#player { contain: inline-size; min-width: 0; max-width: 100%; }
+#gen-status .prog, #gen-status .result { min-height: 158px; box-sizing: border-box; }
+#gen-status .prog.idle { justify-content: center; }
+#gen-status .prog .chips { flex-wrap: nowrap; overflow: hidden; }
+#gen-status .prog-stage { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+#gen-status .prog-head { gap: 10px; }
+#gen-status .prog-pct { flex-shrink: 0; white-space: nowrap; }
+#gen-status .result-head > div:last-child { min-width: 0; }
+#gen-status .result-title, #gen-status .result-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#player { min-height: 180px; }
 .prog.idle .big { font-size: 26px; }
 
 /* ---------- Ergebnis & Hinweise ---------- */
-.result { padding: 18px; border-radius: 18px; border: 1px solid rgba(52,211,153,.28);
+.result { padding: 14px; border-radius: 16px; border: 1px solid rgba(52,211,153,.28);
   background: linear-gradient(135deg, rgba(52,211,153,.10), rgba(34,211,238,.06)); }
 .result-head { display: flex; gap: 14px; align-items: center; margin-bottom: 12px; }
-.result-icon { width: 46px; height: 46px; border-radius: 14px; display: flex; align-items: center; justify-content: center;
+.result-icon { width: 40px; height: 40px; border-radius: 12px; display: flex; align-items: center; justify-content: center;
   font-size: 22px; background: """ + GRADIENT + """; color: #fff; flex-shrink: 0; }
-.result-title { font-size: 18px; font-weight: 750; color: #fff; }
+.result-title { font-size: 16.5px; font-weight: 750; color: #fff; }
 .result-sub { font-size: 13px; color: #a7f3d0; }
-.notice { padding: 13px 16px; border-radius: 14px; font-size: 14px; line-height: 1.5; border: 1px solid; }
+.notice { padding: 10px 14px; border-radius: 12px; font-size: 13.5px; line-height: 1.5; border: 1px solid; }
 .notice b { display: block; margin-bottom: 2px; }
 .notice.ok { background: rgba(52,211,153,.09); border-color: rgba(52,211,153,.28); color: #bbf7d0; }
 .notice.info { background: rgba(139,92,246,.10); border-color: rgba(139,92,246,.30); color: #ddd6fe; }
@@ -200,7 +235,7 @@ footer { display: none !important; }
   border-radius: 6px; word-break: break-all; }
 .lint { display: flex; flex-direction: column; gap: 8px; }
 .lint-row { display: flex; gap: 8px; flex-wrap: wrap; }
-.lint-item { display: flex; gap: 10px; align-items: flex-start; font-size: 13.5px; padding: 9px 12px; border-radius: 12px; }
+.lint-item { display: flex; gap: 10px; align-items: flex-start; font-size: 13px; padding: 7px 11px; border-radius: 10px; }
 .lint-item.err { background: rgba(244,63,94,.10); color: #fecdd3; border: 1px solid rgba(244,63,94,.25); }
 .lint-item.warn { background: rgba(251,191,36,.08); color: #fde68a; border: 1px solid rgba(251,191,36,.22); }
 .lint-item.ok { background: rgba(52,211,153,.08); color: #bbf7d0; border: 1px solid rgba(52,211,153,.22); }
@@ -348,7 +383,7 @@ def progress_html(p):
     steps = []
     for i, key in enumerate(keys):
         cls = "done" if i < current else "active" if i == current else ""
-        steps.append(f'<span class="ps {cls}">{"✓ " if cls == "done" else ""}{esc(t("phase." + key))}</span>')
+        steps.append(f'<span class="ps {cls}" title="{esc(t("phase." + key))}">{esc(t("phase." + key))}</span>')
     meta = []
     if p.abc_tokens:
         meta.append(chip(t("prog.score", n=p.abc_tokens)))

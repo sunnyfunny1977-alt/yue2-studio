@@ -2,6 +2,7 @@
   "ollama_url": "http://localhost:11434",
   "ollama_default_model": "qwen3.8:27b",
   "ollama_temperature": 0.8,
+  "ollama_think": true,
   "yue2_model": "m-a-p/YuE2-3B",
   "yue2_vae": "m-a-p/YuE2-Vae",
   "yue2_backend": "auto",

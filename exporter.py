@@ -70,6 +70,7 @@ def build_info_text(info, audio_files, seconds):
         t("txt.sec_llm"),
         _row("txt.llm", info.get("llm_model", "")),
         _row("txt.language", info.get("language", "")),
+        *([t("txt.concept"), info["concept"]] if info.get("concept") else []),
         t("txt.idea"),
         info.get("idea", "") or "-",
         "",

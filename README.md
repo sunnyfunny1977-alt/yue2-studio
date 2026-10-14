@@ -3,7 +3,7 @@
 Lokale Gradio-App für das KI-Musikmodell **YuE2** (`m-a-p/YuE2-3B`).
 Lyrics und Style-Prompt erzeugt ein lokales Ollama-Modell über einen Masterprompt. Beides lässt sich danach von Hand oder per KI korrigieren.
 
-> **English:** A local Gradio app (German/English UI) for the AI music model YuE2. A local Ollama model writes the lyrics and style prompt from your idea via a master prompt, and you can refine them by hand or ask the AI to correct them. *New song* turns an idea into a full song. *Remake* transcribes the melody of an uploaded song (SheetSage2) and its vocals (Whisper), then sings new or translated lyrics on the original melody in a new style. Songs are only saved on request, as MP3 or FLAC, together with an info TXT file. Windows · NVIDIA GPU or AMD Radeon GPU (ROCm, untested on real hardware) with ≥ 24 GB VRAM, 16 GB cards in an experimental low-VRAM mode · see *Installation* below (`install.ps1` detects your GPU, then `start.bat`).
+> **English:** A local Gradio app (German/English UI) for the AI music model YuE2. A local Ollama model writes the lyrics and style prompt from your idea via a master prompt, and you can refine them by hand or ask the AI to correct them. *New song* turns an idea into a full song, optionally bilingual (e.g. German verses with an Arabic chorus). *Remake* transcribes the melody of an uploaded song (SheetSage2) and its vocals (Whisper), then sings new or translated lyrics on the original melody in a new style. Songs are only saved on request, as MP3 or FLAC, together with an info TXT file. Windows · NVIDIA GPU or AMD Radeon GPU (ROCm, untested on real hardware) with ≥ 24 GB VRAM, 16 GB cards in an experimental low-VRAM mode · see *Installation* below (`install.ps1` detects your GPU, then `start.bat`).
 
 Quellen: [YuE2 Prompt-Guide (ComfyUI)](https://docs.comfy.org/tutorials/audio/yue2/yue2) · [YuE GitHub](https://github.com/multimodal-art-projection/YuE)
 
@@ -71,6 +71,7 @@ Die Oberfläche gibt es auf **Deutsch** und **Englisch**.
 ## Bedienung
 1. **Modus wählen**
    - **Neuer Song:** Idee eingeben, Sprache und Ziel-Länge wählen, dann **„Lyrics & Style erstellen“**.
+   - **Mehrsprachige Songs:** Unter **„Zweite Sprache“** eine weitere Sprache wählen und bei **„Einsatz“** festlegen, wo sie gesungen wird: Refrain, Bridge, Refrain + Bridge, einzelne Zeilen gemischt oder wie in der Idee beschrieben. Beispiel: deutscher Text mit Refrain auf Arabisch. Das funktioniert in beiden Modi; im Remake mit „Original beibehalten“ wird dann nur der gewählte Teil übersetzt. Jede Sprache wird in ihrer eigenen Schrift geschrieben (Arabisch in arabischer Schrift, Russisch kyrillisch …), weil YuE2 sie so zuverlässiger singt als in lateinischer Umschrift. Getestet: Deutsch mit arabischem Refrain. YuE2 ist offiziell vor allem auf Chinesisch und Englisch trainiert, andere Sprachen klingen je nach Sprache unterschiedlich gut.
    - **Remake:** Song hochladen. Eine Karte zeigt Cover, Titel, Interpret und weitere Tags des Originals. Optional unter **„Originaltext online suchen“** den Songtext von [LRCLIB.net](https://lrclib.net) abrufen: Titel und Interpret sind aus den Tags vorbelegt, und die Treffer sind nach Übereinstimmung und Songlänge sortiert. Mit **„Als Originaltext übernehmen“** landet der Text im Feld „Originaltext“, und die Analyse überspringt dann die Whisper-Erkennung. Songtexte sind urheberrechtlich geschützt: nur privat verwenden und die Rechte am Original beachten. Danach **„Song analysieren“** klicken. SheetSage2 schreibt die Melodie als ABC-Noten, Whisper erkennt den Gesangstext. Danach den Lyrics-Modus (beibehalten, neu schreiben, übersetzen) und den neuen Stil wählen und **„Lyrics & Style erstellen“** klicken. YuE2 singt die Lyrics anschließend auf die Originalmelodie im neuen Stil.
 2. **Bearbeiten:** Titel, Style und Lyrics frei editieren. **„Prüfen“** zeigt Regelverstöße und die geschätzte Länge. **„Mit KI korrigieren“** setzt einen Korrekturwunsch um und behebt dabei auch Regelverstöße.
 3. **Song generieren:** Ollama wird automatisch aus dem VRAM entladen. Fortschritt und Abbruch sind möglich. Das Ergebnis ist zunächst **nur eine Vorschau** und wird nicht gespeichert.
@@ -84,12 +85,22 @@ Die Prompts liegen in `prompts/` und lassen sich anpassen:
 - `master_remake.md`: Lyrics passend zur transkribierten Originalmelodie (Silbenzahl je Zeile beibehalten)
 - `master_correct.md`: Korrektur nach Wunsch und Regeln
 
+Die Masterprompts arbeiten wie ein erfahrener Musikproduzent („YuE2 Song Architect“):
+- **Songkonzept zuerst:** Ollama analysiert die Idee (Stil, Geschichte, Arrangement, Gesang, Produktion) und schreibt 2–3 Sätze Songkonzept. Erst danach folgen Style und Lyrics, die sich an das Konzept halten. Das Konzept steht im Feinschliff im Feld **„Songkonzept“**, lässt sich bearbeiten und landet in der Info-TXT.
+- **Songwriting:** klare Kernaussage, konkrete Bilder statt Floskeln, Spannungsbogen von Strophe über Pre-Chorus zum Refrain, Refrain als Hook, echte Reime in jeder Sektion. Ein in der Idee mitgelieferter Songtext wird unverändert übernommen.
+- **Style:** konkrete Musikbegriffe, keine widersprüchlichen Angaben, kein Negativ-Prompt (YuE2 hat keinen).
+- **Qualitätskontrolle:** Vor der Antwort prüft das Modell Reime, Singbarkeit, Länge und alle Vorgaben.
+- **Gezielte Korrektur:** „Mit KI korrigieren“ ändert nur das Betroffene und übersetzt Problembeschreibungen in konkrete Änderungen („zu langsam“ → höheres BPM, „Stimme geht unter“ → präsentere Stimme).
+
+**🧠 Denkmodus** (Schalter unter der Modus-Leiste, standardmäßig an): Denkfähige Modelle wie Qwen überlegen vor der Antwort. Die Reime werden deutlich besser, dafür dauert es etwa dreimal so lange (getestet mit `qwen3.8:27b`: ca. 1–3 min statt 25 s). Modelle ohne Denkmodus laufen unverändert.
+
 Kernregeln nach dem YuE2-Guide: Der **Style** ist eine kommagetrennte Liste in der Reihenfolge *Sprache → Stimme → Genre → Stimmung → BPM → Instrumente → Produktion*. Die **Lyrics** enthalten nur gesungene Wörter mit den Tags `[Intro] [Verse] [Pre-Chorus] [Chorus] [Bridge] [Interlude] [Outro]`. Musikalische Anweisungen stehen nie in den Lyrics.
 
 ## Einstellungen (`config.json`)
 | Schlüssel | Bedeutung |
 |---|---|
 | `ollama_default_model` | vorausgewähltes Ollama-Modell |
+| `ollama_think` | Denkmodus beim Start an (`true`) oder aus (`false`) |
 | `yue2_backend` | `auto` (NVIDIA: `torch` mit CUDA-Graphs, AMD: `torch-eager`), `torch` oder `torch-eager` |
 | `yue2_attention` | `auto` (NVIDIA/Windows: cuDNN, da PyTorch für Windows ohne Flash-Attention gebaut ist; AMD: `sdpa`), `cudnn`, `sdpa` oder `flash` |
 | `yue2_synth_attention` | Attention-Kern der Audio-Synthese: `auto` (NVIDIA: cuDNN, AMD: `sdpa` – spart bei einem 4-Minuten-Song rund 12 GB VRAM und ist mehrfach schneller), `cudnn`, `efficient`, `sdpa` oder `original` (YuE2-Standard) |
