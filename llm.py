@@ -57,6 +57,27 @@ def _parse_json(text):
         raise OllamaError(t("err.bad_json", text=text[:800]))
 
 
+def chat_text(model, system, user, temperature=None):
+    """Freitext-Antwort ohne JSON-Schema (z. B. die Bildbeschreibung für das Cover)."""
+    payload = {
+        "model": model,
+        "messages": [{"role": "system", "content": system},
+                     {"role": "user", "content": user}],
+        "stream": False,
+        "think": False,
+        "options": {"temperature": CONFIG["ollama_temperature"] if temperature is None else temperature,
+                    "num_ctx": 16384},
+    }
+    try:
+        content = _chat(payload)
+    except OllamaError as e:
+        if "think" not in str(e).lower():
+            raise
+        payload.pop("think")
+        content = _chat(payload)
+    return re.sub(r"<think>.*?</think>", "", content, flags=re.S).strip()
+
+
 def chat_json(model, system, user, schema=SONG_SCHEMA, temperature=None, think=False):
     """Chat mit erzwungenem JSON-Schema.
 

@@ -168,6 +168,11 @@ class YuE2Engine:
     def loaded(self):
         return self._pipe is not None
 
+    @property
+    def busy(self):
+        """Läuft gerade eine Generierung (oder ein Entladen)?"""
+        return self._lock.locked()
+
     def load(self):
         if self._pipe is None:
             from yue2 import YuE2Pipeline

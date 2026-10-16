@@ -13,6 +13,7 @@ from pathlib import Path
 TEMP_DIR = Path(tempfile.mkdtemp(prefix="yue2_app_"))
 os.environ["GRADIO_TEMP_DIR"] = str(TEMP_DIR)
 atexit.register(shutil.rmtree, TEMP_DIR, ignore_errors=True)
+atexit.register(lambda: __import__("cover").ENGINE.stop())
 
 # Muss vor dem ersten CUDA-Zugriff gesetzt sein: Ohne Aufräumschwelle hortet PyTorchs Allocator beim
 # VAE-Dekodieren bis zu ~28 GB ungenutzten Cache, obwohl nur 2–7 GB belegt sind.
@@ -22,8 +23,10 @@ for _var in ("PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_HIP_ALLOC_CONF"):
 import gradio as gr  # noqa: E402
 import soundfile as sf  # noqa: E402
 
+import cover  # noqa: E402
 import gpu_info  # noqa: E402
 import i18n  # noqa: E402
+import library  # noqa: E402
 import llm  # noqa: E402
 import sysmon  # noqa: E402
 import ui_theme as ui  # noqa: E402
@@ -120,13 +123,12 @@ def model_choices():
 def hero_html():
     _, _, ok, text = model_choices()
     gpu_text, gpu_ok = gpu_status()
-    return ui.hero(ok, text, gpu_text, gpu_ok, gpu_info.current().low_vram)
+    return ui.hero(ok, text, gpu_text, gpu_ok, gpu_info.current().low_vram, cover.chip_text(), cover.available())
 
 
 def refresh_models():
-    models, value, ok, text = model_choices()
-    gpu_text, gpu_ok = gpu_status()
-    return gr.update(choices=models, value=value), ui.hero(ok, text, gpu_text, gpu_ok, gpu_info.current().low_vram)
+    models, value, _, _ = model_choices()
+    return gr.update(choices=models, value=value), hero_html()
 
 
 def require_model(model):
@@ -385,25 +387,209 @@ def cancel():
 
 def unload_all():
     llm.unload()
-    if not ENGINE.unload():
+    if not ENGINE.unload() or not cover.ENGINE.stop():
         return ui.notice("warn", t("unload.busy_t"), t("unload.busy_b"))
     return ui.notice("ok", t("unload.ok_t"), t("unload.ok_b"))
 
 
 # ---------------------------------------------------------------- Speichern
 
-def save(result, name, fmt, out_dir, overwrite):
+def save(result, name, fmt, out_dir, overwrite, with_cover, model):
     if not result:
         raise gr.Error(t("err.no_song"))
     name = sanitize_filename(name or result["info"].get("title"))
     info = {**result["info"], "title": name}
+    folder = Path(out_dir or path("output_dir"))
     try:
-        audio_file, text_file = save_song(result["audio"], SAMPLE_RATE, name, fmt,
-                                          out_dir or path("output_dir"), info, overwrite=overwrite)
+        audio_file, text_file = save_song(result["audio"], SAMPLE_RATE, name, fmt, folder, info, overwrite=overwrite)
     except (FileExistsError, RuntimeError, OSError) as e:
-        return ui.notice("err", t("save.failed"), ui.esc(e))
-    return ui.notice("ok", t("save.ok", name=name),
-                     f"<code>{ui.esc(audio_file)}</code><br><code>{ui.esc(text_file)}</code>")
+        yield ui.notice("err", t("save.failed"), ui.esc(e))
+        return
+    library.remember_dir(folder)
+    saved = ui.notice("ok", t("save.ok", name=name),
+                      f"<code>{ui.esc(audio_file)}</code><br><code>{ui.esc(text_file)}</code>")
+    if not (with_cover and cover.available()):
+        try:  # vorhandenes Cover (z. B. vom MP3) auch in das neue Format übernehmen
+            cover.embed_existing(audio_file, name)
+        except RuntimeError as e:
+            saved += ui.notice("warn", t("cover.failed"), ui.esc(e))
+        yield saved
+        return
+    for status in run_cover(audio_file.parent, audio_file.stem, info, model):
+        yield saved + status
+
+
+# ---------------------------------------------------------------- Cover (optional, FLUX.3 Image Klein)
+
+def cover_status_html(step, i=0, n=0):
+    texts = {"prompt": t("cover.step_prompt"), "load": t("cover.step_load"),
+             "render": t("cover.step_render", i=i, n=n), "embed": t("cover.step_embed")}
+    pct = {"prompt": 8, "load": 20, "embed": 97}.get(step, 22 + 72 * (i / max(n, 1)))
+    return (f'<div class="cover-prog"><div class="prog-head"><span class="prog-stage">{ui.esc(texts[step])}</span>'
+            f'<span class="prog-pct">{pct:.0f} %</span></div><div class="prog-bar"><div class="prog-fill" '
+            f'style="width:{pct:.1f}%"></div></div></div>')
+
+
+def run_cover(folder, stem, info, model):
+    """Erstellt das Cover im Hintergrund-Thread und liefert laufend Status-HTML (zuletzt Ergebnis/Fehler)."""
+    if not cover.available():
+        yield ui.notice("warn", t("cover.failed"), t("cover.missing"))
+        return
+    if ENGINE.busy:
+        yield ui.notice("warn", t("cover.failed"), t("cover.busy_yue"))
+        return
+    if not model:
+        yield ui.notice("err", t("cover.failed"), t("err.no_model"))
+        return
+    state, box = {"step": ("prompt",)}, {}
+
+    def work():
+        try:
+            box["result"] = cover.make_cover(folder, stem, info, model,
+                                             on_status=lambda *s: state.__setitem__("step", s))
+        except BaseException as e:  # an den UI-Thread weiterreichen
+            box["error"] = e
+
+    worker = threading.Thread(target=work, daemon=True)
+    worker.start()
+    while worker.is_alive():
+        yield cover_status_html(*state["step"])
+        worker.join(timeout=0.5)
+    if "error" in box:
+        yield ui.notice("err", t("cover.failed"), ui.esc(box["error"]))
+        return
+    jpg, _caption, seed, embedded = box["result"]
+    yield ui.notice("ok", t("cover.done_t"),
+                    ui.esc(t("cover.done_b", file=jpg.name, formats=", ".join(embedded) or "–", seed=seed)))
+
+
+# ---------------------------------------------------------------- Bibliothek
+
+LIB_ORDERS = ["new", "title", "length"]
+THUMB_DIR = TEMP_DIR / "thumbs"
+SERVE_DIR = TEMP_DIR / "library"
+ALLOWED_DIRS = [TEMP_DIR] + [d.resolve() for d in library.library_dirs()]
+
+
+def lib_sort_choices():
+    return [(t(f"lib.sort.{o}"), o) for o in LIB_ORDERS]
+
+
+def served(file):
+    """Gradio liefert nur Dateien aus erlaubten Ordnern aus; neue Ordner der laufenden Sitzung per Kopie."""
+    file = Path(file).resolve()
+    if any(file.is_relative_to(d) for d in ALLOWED_DIRS):
+        return str(file)
+    SERVE_DIR.mkdir(parents=True, exist_ok=True)
+    target = SERVE_DIR / f"{abs(hash((str(file), file.stat().st_mtime))) % 10**12}{file.suffix}"
+    if not target.exists():
+        shutil.copy2(file, target)
+    return str(target)
+
+
+def library_view(query, order):
+    """(Galerie-Einträge, Track-Liste, Zähler-HTML) für die aktuelle Suche/Sortierung."""
+    all_tracks = library.scan()
+    tracks = library.sort_filter(all_tracks, query, order)
+    # Bildunterschrift zweizeilig: Titel, darunter Länge · Genre · BPM
+    items = [(str(library.thumbnail(tr, THUMB_DIR)), f"{tr.title}\n{tr.summary()}" if tr.summary() else tr.title)
+             for tr in tracks]
+    if not all_tracks:
+        count = ui.notice("info", t("lib.empty"))
+    elif len(tracks) == len(all_tracks):
+        count = f'<div class="lib-count">{ui.esc(t("lib.count", n=len(tracks)))}</div>'
+    else:
+        count = f'<div class="lib-count">{ui.esc(t("lib.count_filtered", n=len(tracks), total=len(all_tracks)))}</div>'
+    return items, tracks, count
+
+
+def refresh_library(query, order):
+    items, tracks, count = library_view(query, order)
+    return gr.update(value=items, selected_index=None), tracks, count
+
+
+def cover_button(track):
+    label = t("cover.btn_again") if track and track.jpg else t("cover.btn")
+    return gr.update(value=label, interactive=bool(track) and cover.available())
+
+
+def track_details(track):
+    """Ausgaben der Detailkarte: Cover, Kopf, Player, Konzept, Idee, Style, Lyrics, Cover-Knopf."""
+    if track is None:
+        return (None, f'<div class="lib-pick">{ui.esc(t("lib.pick"))}</div>', None, "", "", "", "",
+                cover_button(None))
+    info = track.info
+    image = served(track.jpg) if track.jpg else str(library.thumbnail(track, THUMB_DIR, size=512))
+    audio = served(track.main_audio) if track.main_audio else None
+    return (image, ui.track_head(track), audio, info.get("concept", ""), info.get("idea", ""),
+            info.get("style", ""), info.get("lyrics", ""), cover_button(track))
+
+
+def select_track(tracks, evt: gr.SelectData):
+    track = tracks[evt.index] if tracks and evt.index is not None and evt.index < len(tracks) else None
+    return (track, *track_details(track), "")
+
+
+def library_cover(track, model, query, order):
+    """Cover für den gewählten Song erstellen; danach Galerie und Detailkarte aktualisieren."""
+    if track is None:
+        raise gr.Error(t("lib.no_track"))
+    keep = gr.update()
+    for status in run_cover(track.folder, track.stem, {**track.info, "title": track.title}, model):
+        yield status, keep, keep, keep, keep, keep, keep
+    items, tracks, count = library_view(query, order)
+    fresh = next((tr for tr in tracks if tr.id == track.id), track)
+    image = served(fresh.jpg) if fresh.jpg else keep
+    yield gr.update(), gr.update(value=items), tracks, fresh, image, cover_button(fresh), ui.track_head(fresh)
+
+
+def _reused(track, what):
+    return ui.notice("ok", t("lib.reused_t"), ui.esc(t("lib.reused_b", title=track.title, what=t(what))))
+
+
+def reuse_all(track):
+    """Alle Werte ins Studio: Titel, Konzept, Idee/Stilwunsch, Sprache, Style, Lyrics, Seed, CoT (+ Remake-Melodie)."""
+    if track is None:
+        raise gr.Error(t("lib.no_track"))
+    info = track.info
+    style, lyrics = info.get("style", ""), info.get("lyrics", "")
+    remake = info.get("mode") == "remake" and bool(info.get("abc"))
+    seed = info.get("seed")
+    max_secs = (min(600, int(track.seconds) + 60) if remake and track.seconds
+                else auto_max_seconds(lyrics, style))
+    keep = gr.update()
+    return (gr.update(selected="studio"),
+            MODE_REMAKE if remake else MODE_NEW,
+            keep if remake else info.get("idea", ""),        # idea
+            info.get("idea", "") if remake else keep,         # style_wish
+            info.get("abc", "") if remake else keep,          # abc
+            info.get("lyrics_mode") or keep if remake else keep,
+            info.get("concept", ""), track.title, style, lyrics, info.get("language", ""),
+            ui.lint_html(style, lyrics), track.title, max_secs,
+            seed if isinstance(seed, int) else keep, gr.update(value=not isinstance(seed, int)),
+            info.get("cot") if info.get("cot") in COTS else keep,
+            _reused(track, "lib.what_all_remake" if remake else "lib.what_all"))
+
+
+def reuse_idea(track):
+    if track is None:
+        raise gr.Error(t("lib.no_track"))
+    return (gr.update(selected="studio"), MODE_NEW, track.info.get("idea", ""), track.info.get("concept", ""),
+            _reused(track, "lib.what_idea"))
+
+
+def reuse_style(track, lyrics):
+    if track is None:
+        raise gr.Error(t("lib.no_track"))
+    style = track.info.get("style", "")
+    return gr.update(selected="studio"), style, ui.lint_html(style, lyrics), _reused(track, "lib.what_style")
+
+
+def reuse_lyrics(track, style):
+    if track is None:
+        raise gr.Error(t("lib.no_track"))
+    lyrics = track.info.get("lyrics", "")
+    return gr.update(selected="studio"), lyrics, ui.lint_html(style, lyrics), _reused(track, "lib.what_lyrics")
 
 
 # ---------------------------------------------------------------- UI
@@ -439,151 +625,212 @@ def build_ui():
         lyric_results = gr.State([])  # Treffer der Online-Lyrics-Suche
         lyrics_source = gr.State(None)  # gesetzt, wenn der Originaltext aus der Online-Suche stammt
 
-        # Drei Spalten: Idee | Feinschliff | Generieren + Speichern (bricht auf schmalen Fenstern um)
-        with gr.Row(equal_height=False, elem_id="main-row"):
-            # ================= Spalte 1: Idee =================
-            with gr.Column(scale=4, min_width=320):
-                with gr.Column(elem_classes="card"):
-                    tr(gr.HTML(ui.step(1, "step1.title", "step1.sub")),
-                       value=lambda: ui.step(1, "step1.title", "step1.sub"))
-                    mode = tr(gr.Radio(mode_choices(), value=MODE_NEW, show_label=False, container=False,
-                                       elem_id="mode-switch", elem_classes="seg"), choices=mode_choices)
-                    with gr.Row(equal_height=True, elem_classes="model-row"):
-                        model_dd = tr(gr.Dropdown(models, value=model_value, label=t("model.label"),
-                                                  scale=5, min_width=160, elem_id="model-dd"),
-                                      label="model.label")
-                        refresh_btn = gr.Button("↻", scale=0, min_width=40, size="sm", elem_classes="icon-btn")
-                    think = tr(gr.Checkbox(value=bool(CONFIG.get("ollama_think", True)), label=t("think.label"),
-                                           container=False, elem_id="think-cb"), label="think.label")
+        with gr.Tabs(selected="studio", elem_id="main-tabs") as tabs:
+          with gr.Tab(t("tab.studio"), id="studio") as tab_studio:
+            tr(tab_studio, label="tab.studio")
+            # Drei Spalten: Idee | Feinschliff | Generieren + Speichern (bricht auf schmalen Fenstern um)
+            with gr.Row(equal_height=False, elem_id="main-row"):
+                # ================= Spalte 1: Idee =================
+                with gr.Column(scale=4, min_width=320):
+                    with gr.Column(elem_classes="card"):
+                        tr(gr.HTML(ui.step(1, "step1.title", "step1.sub")),
+                           value=lambda: ui.step(1, "step1.title", "step1.sub"))
+                        mode = tr(gr.Radio(mode_choices(), value=MODE_NEW, show_label=False, container=False,
+                                           elem_id="mode-switch", elem_classes="seg"), choices=mode_choices)
+                        with gr.Row(equal_height=True, elem_classes="model-row"):
+                            model_dd = tr(gr.Dropdown(models, value=model_value, label=t("model.label"),
+                                                      scale=5, min_width=160, elem_id="model-dd"),
+                                          label="model.label")
+                            refresh_btn = gr.Button("↻", scale=0, min_width=40, size="sm", elem_classes="icon-btn")
+                        think = tr(gr.Checkbox(value=bool(CONFIG.get("ollama_think", True)), label=t("think.label"),
+                                               container=False, elem_id="think-cb"), label="think.label")
 
-                    # --- Neuer Song
-                    with gr.Column(visible=True) as new_group:
-                        idea = tr(gr.Textbox(label=t("idea.label"), lines=4, max_lines=8, elem_id="idea-box",
-                                             placeholder=t("idea.ph")), label="idea.label", placeholder="idea.ph")
+                        # --- Neuer Song
+                        with gr.Column(visible=True) as new_group:
+                            idea = tr(gr.Textbox(label=t("idea.label"), lines=4, max_lines=8, elem_id="idea-box",
+                                                 placeholder=t("idea.ph")), label="idea.label", placeholder="idea.ph")
+                            with gr.Row():
+                                language = tr(gr.Dropdown(lang_choices(), value="auto", label=t("language.label")),
+                                              choices=lang_choices, label="language.label")
+                                target_secs = tr(gr.Slider(60, 480, value=180, step=15, label=t("target.label")),
+                                                 label="target.label")
+                            with gr.Row():
+                                language2 = tr(gr.Dropdown(lang2_choices(), value="none", label=t("lang2.label")),
+                                               choices=lang2_choices, label="lang2.label")
+                                mix_use = tr(gr.Dropdown(mix_choices(), value="chorus", label=t("mix.label"),
+                                                         interactive=False),
+                                               choices=mix_choices, label="mix.label")
+                            create_new_btn = tr(gr.Button(t("create.btn"), variant="primary", elem_classes="create-btn"),
+                                                value="create.btn")
+
+                        # --- Remake
+                        with gr.Column(visible=False) as remake_group:
+                            source = tr(gr.Audio(label=t("source.label"), type="filepath", sources=["upload"],
+                                                 waveform_options=ui.WAVEFORM), label="source.label")
+                            track_box = gr.HTML(elem_classes="html-slot")
+                            with gr.Accordion(t("lyr.acc"), open=False) as lyr_acc:
+                                with gr.Row(equal_height=True):
+                                    lyr_title = tr(gr.Textbox(label=t("lyr.title"), max_lines=1, min_width=120),
+                                                   label="lyr.title")
+                                    lyr_artist = tr(gr.Textbox(label=t("lyr.artist"), max_lines=1, min_width=120),
+                                                    label="lyr.artist")
+                                lyr_search_btn = tr(gr.Button(t("lyr.search_btn"), size="sm", variant="secondary"),
+                                                    value="lyr.search_btn")
+                                lyr_choice = tr(gr.Dropdown([], label=t("lyr.results"), elem_id="lyr-dd"),
+                                                label="lyr.results")
+                                lyr_use_btn = tr(gr.Button(t("lyr.use_btn"), size="sm", variant="primary"),
+                                                 value="lyr.use_btn")
+                                lyr_status = gr.HTML(elem_classes="html-slot")
+                                lyr_hint = tr(gr.HTML(f'<div class="lyr-hint">{t("lyr.hint")}</div>'),
+                                              value=lambda: f'<div class="lyr-hint">{t("lyr.hint")}</div>')
+                            tr(lyr_acc, label="lyr.acc")
+                            analyze_btn = tr(gr.Button(t("analyze.btn"), size="sm", variant="secondary",
+                                                       elem_classes="ghost-btn"),
+                                             value="analyze.btn")
+                            remake_status = gr.HTML(elem_classes="html-slot")
+                            transcript = tr(gr.Textbox(label=t("transcript.label"), lines=6, max_lines=12),
+                                            label="transcript.label")
+                            with gr.Accordion(t("abc.acc"), open=False) as abc_acc:
+                                abc = gr.Textbox(lines=12, show_label=False)
+                            tr(abc_acc, label="abc.acc")
+                            lyrics_mode = tr(gr.Radio(lmode_choices(), value="keep", label=t("lmode.label"),
+                                                      elem_classes="seg seg-sm"), choices=lmode_choices, label="lmode.label")
+                            style_wish = tr(gr.Textbox(label=t("wish.label"), lines=2,
+                                                       placeholder=t("wish.ph")), label="wish.label", placeholder="wish.ph")
+                            remake_lang = tr(gr.Dropdown(lang_choices(), value="auto", label=t("rlang.label")),
+                                             choices=lang_choices, label="rlang.label")
+                            with gr.Row():
+                                remake_lang2 = tr(gr.Dropdown(lang2_choices(), value="none", label=t("lang2.label")),
+                                                  choices=lang2_choices, label="lang2.label")
+                                remake_mix = tr(gr.Dropdown(mix_choices(), value="chorus", label=t("mix.label"),
+                                                            interactive=False),
+                                                  choices=mix_choices, label="mix.label")
+                            create_remake_btn = tr(gr.Button(t("create.btn"), variant="primary", elem_classes="create-btn"),
+                                                   value="create.btn")
+
+                # ================= Spalte 2: Feinschliff =================
+                with gr.Column(scale=5, min_width=400):
+                    with gr.Column(elem_classes="card"):
+                        tr(gr.HTML(ui.step(2, "step2.title", "step2.sub")),
+                           value=lambda: ui.step(2, "step2.title", "step2.sub"))
+                        concept = tr(gr.Textbox(label=t("concept.label"), lines=2, max_lines=5, elem_id="concept-box",
+                                                placeholder=t("concept.ph")), label="concept.label", placeholder="concept.ph")
+                        title = tr(gr.Textbox(label=t("title.label"), placeholder=t("title.ph")),
+                                   label="title.label", placeholder="title.ph")
+                        style = tr(gr.Textbox(label=t("style.label"), lines=2, elem_id="style-box", placeholder=t("style.ph")),
+                                   label="style.label", placeholder="style.ph")
+                        lyrics = tr(gr.Textbox(label=t("lyrics.label"), lines=14, max_lines=14, elem_id="lyrics-box",
+                                               placeholder="[Verse]\n…\n\n[Chorus]\n…"), label="lyrics.label")
+                        lint_box = gr.HTML(elem_classes="html-slot")
                         with gr.Row():
-                            language = tr(gr.Dropdown(lang_choices(), value="auto", label=t("language.label")),
-                                          choices=lang_choices, label="language.label")
-                            target_secs = tr(gr.Slider(60, 480, value=180, step=15, label=t("target.label")),
-                                             label="target.label")
+                            check_btn = tr(gr.Button(t("check.btn"), size="sm", min_width=100, elem_classes="ghost-btn"), value="check.btn")
+                            normalize_btn = tr(gr.Button(t("normalize.btn"), size="sm", min_width=100, elem_classes="ghost-btn"),
+                                               value="normalize.btn")
+                        with gr.Row(equal_height=True, elem_classes="correct-row"):
+                            correction = tr(gr.Textbox(label=t("correction.label"), scale=4, lines=2, max_lines=4,
+                                                       placeholder=t("correction.ph")),
+                                            label="correction.label", placeholder="correction.ph")
+                            correct_btn = tr(gr.Button(t("correct.btn"), scale=0, min_width=180, size="sm",
+                                                       variant="secondary"), value="correct.btn")
+
+                # ================= Spalte 3: Generieren + Speichern =================
+                with gr.Column(scale=4, min_width=320):
+                    with gr.Column(elem_classes="card"):
+                        tr(gr.HTML(ui.step(3, "step3.title", "step3.sub")),
+                           value=lambda: ui.step(3, "step3.title", "step3.sub"))
+                        gen_btn = tr(gr.Button(t("gen.btn"), variant="primary", elem_id="gen-btn"),
+                                     value="gen.btn")
                         with gr.Row():
-                            language2 = tr(gr.Dropdown(lang2_choices(), value="none", label=t("lang2.label")),
-                                           choices=lang2_choices, label="lang2.label")
-                            mix_use = tr(gr.Dropdown(mix_choices(), value="chorus", label=t("mix.label"),
-                                                     interactive=False),
-                                           choices=mix_choices, label="mix.label")
-                        create_new_btn = tr(gr.Button(t("create.btn"), variant="primary", elem_classes="create-btn"),
-                                            value="create.btn")
+                            cancel_btn = tr(gr.Button(t("cancel.btn"), variant="stop", size="sm", min_width=100), value="cancel.btn")
+                            unload_btn = tr(gr.Button(t("unload.btn"), size="sm", min_width=100, elem_classes="ghost-btn"),
+                                            value="unload.btn")
+                        gen_status = gr.HTML(ui.idle_html(), elem_id="gen-status", elem_classes="html-slot")
+                        player = tr(gr.Audio(label=t("player.label"), type="filepath", interactive=False, elem_id="player",
+                                             waveform_options=ui.WAVEFORM), label="player.label")
+                        with gr.Accordion(t("adv.acc"), open=False) as adv_acc:
+                            cot = tr(gr.Dropdown(cot_choices(), value="full", label=t("cot.label")),
+                                     choices=cot_choices, label="cot.label")
+                            max_secs = tr(gr.Slider(30, 600, value=180 if gpu_info.current().low_vram else 300, step=10,
+                                                    label=t("max.label")), label="max.label")
+                            with gr.Row():
+                                seed = tr(gr.Number(value=831001, precision=0, label=t("seed.label"), min_width=120),
+                                          label="seed.label")
+                                cfg = tr(gr.Number(value=1.0, label=t("cfg.label"), minimum=0, maximum=20, min_width=120),
+                                         label="cfg.label")
+                            random_seed = tr(gr.Checkbox(value=True, label=t("random.label")), label="random.label")
+                        tr(adv_acc, label="adv.acc")
 
-                    # --- Remake
-                    with gr.Column(visible=False) as remake_group:
-                        source = tr(gr.Audio(label=t("source.label"), type="filepath", sources=["upload"],
-                                             waveform_options=ui.WAVEFORM), label="source.label")
-                        track_box = gr.HTML(elem_classes="html-slot")
-                        with gr.Accordion(t("lyr.acc"), open=False) as lyr_acc:
-                            with gr.Row(equal_height=True):
-                                lyr_title = tr(gr.Textbox(label=t("lyr.title"), max_lines=1, min_width=120),
-                                               label="lyr.title")
-                                lyr_artist = tr(gr.Textbox(label=t("lyr.artist"), max_lines=1, min_width=120),
-                                                label="lyr.artist")
-                            lyr_search_btn = tr(gr.Button(t("lyr.search_btn"), size="sm", variant="secondary"),
-                                                value="lyr.search_btn")
-                            lyr_choice = tr(gr.Dropdown([], label=t("lyr.results"), elem_id="lyr-dd"),
-                                            label="lyr.results")
-                            lyr_use_btn = tr(gr.Button(t("lyr.use_btn"), size="sm", variant="primary"),
-                                             value="lyr.use_btn")
-                            lyr_status = gr.HTML(elem_classes="html-slot")
-                            lyr_hint = tr(gr.HTML(f'<div class="lyr-hint">{t("lyr.hint")}</div>'),
-                                          value=lambda: f'<div class="lyr-hint">{t("lyr.hint")}</div>')
-                        tr(lyr_acc, label="lyr.acc")
-                        analyze_btn = tr(gr.Button(t("analyze.btn"), size="sm", variant="secondary",
-                                                   elem_classes="ghost-btn"),
-                                         value="analyze.btn")
-                        remake_status = gr.HTML(elem_classes="html-slot")
-                        transcript = tr(gr.Textbox(label=t("transcript.label"), lines=6, max_lines=12),
-                                        label="transcript.label")
-                        with gr.Accordion(t("abc.acc"), open=False) as abc_acc:
-                            abc = gr.Textbox(lines=12, show_label=False)
-                        tr(abc_acc, label="abc.acc")
-                        lyrics_mode = tr(gr.Radio(lmode_choices(), value="keep", label=t("lmode.label"),
-                                                  elem_classes="seg seg-sm"), choices=lmode_choices, label="lmode.label")
-                        style_wish = tr(gr.Textbox(label=t("wish.label"), lines=2,
-                                                   placeholder=t("wish.ph")), label="wish.label", placeholder="wish.ph")
-                        remake_lang = tr(gr.Dropdown(lang_choices(), value="auto", label=t("rlang.label")),
-                                         choices=lang_choices, label="rlang.label")
-                        with gr.Row():
-                            remake_lang2 = tr(gr.Dropdown(lang2_choices(), value="none", label=t("lang2.label")),
-                                              choices=lang2_choices, label="lang2.label")
-                            remake_mix = tr(gr.Dropdown(mix_choices(), value="chorus", label=t("mix.label"),
-                                                        interactive=False),
-                                              choices=mix_choices, label="mix.label")
-                        create_remake_btn = tr(gr.Button(t("create.btn"), variant="primary", elem_classes="create-btn"),
-                                               value="create.btn")
+                    with gr.Column(elem_classes="card"):
+                        tr(gr.HTML(ui.step(4, "step4.title", "step4.sub")),
+                           value=lambda: ui.step(4, "step4.title", "step4.sub"))
+                        save_name = tr(gr.Textbox(label=t("savename.label"), placeholder=t("savename.ph")),
+                                       label="savename.label", placeholder="savename.ph")
+                        save_fmt = tr(gr.Radio(["MP3", "FLAC"], value="MP3", label=t("fmt.label"), elem_classes="seg seg-sm"),
+                                      label="fmt.label")
+                        save_dir = tr(gr.Textbox(value=str(path("output_dir")), label=t("savedir.label")),
+                                      label="savedir.label")
+                        overwrite = tr(gr.Checkbox(value=False, label=t("overwrite.label")), label="overwrite.label")
+                        save_cover = tr(gr.Checkbox(value=False, label=t("cover.save_cb"), interactive=cover.available(),
+                                                    info=None if cover.available() else t("cover.chip_off")),
+                                        label="cover.save_cb")
+                        save_btn = tr(gr.Button(t("save.btn"), variant="primary", elem_classes="create-btn"),
+                                      value="save.btn")
+                        save_box = gr.HTML(elem_classes="html-slot")
 
-            # ================= Spalte 2: Feinschliff =================
-            with gr.Column(scale=5, min_width=400):
-                with gr.Column(elem_classes="card"):
-                    tr(gr.HTML(ui.step(2, "step2.title", "step2.sub")),
-                       value=lambda: ui.step(2, "step2.title", "step2.sub"))
-                    concept = tr(gr.Textbox(label=t("concept.label"), lines=2, max_lines=5, elem_id="concept-box",
-                                            placeholder=t("concept.ph")), label="concept.label", placeholder="concept.ph")
-                    title = tr(gr.Textbox(label=t("title.label"), placeholder=t("title.ph")),
-                               label="title.label", placeholder="title.ph")
-                    style = tr(gr.Textbox(label=t("style.label"), lines=2, elem_id="style-box", placeholder=t("style.ph")),
-                               label="style.label", placeholder="style.ph")
-                    lyrics = tr(gr.Textbox(label=t("lyrics.label"), lines=14, max_lines=14, elem_id="lyrics-box",
-                                           placeholder="[Verse]\n…\n\n[Chorus]\n…"), label="lyrics.label")
-                    lint_box = gr.HTML(elem_classes="html-slot")
-                    with gr.Row():
-                        check_btn = tr(gr.Button(t("check.btn"), size="sm", min_width=100, elem_classes="ghost-btn"), value="check.btn")
-                        normalize_btn = tr(gr.Button(t("normalize.btn"), size="sm", min_width=100, elem_classes="ghost-btn"),
-                                           value="normalize.btn")
-                    with gr.Row(equal_height=True, elem_classes="correct-row"):
-                        correction = tr(gr.Textbox(label=t("correction.label"), scale=4, lines=2, max_lines=4,
-                                                   placeholder=t("correction.ph")),
-                                        label="correction.label", placeholder="correction.ph")
-                        correct_btn = tr(gr.Button(t("correct.btn"), scale=0, min_width=180, size="sm",
-                                                   variant="secondary"), value="correct.btn")
 
-            # ================= Spalte 3: Generieren + Speichern =================
-            with gr.Column(scale=4, min_width=320):
-                with gr.Column(elem_classes="card"):
-                    tr(gr.HTML(ui.step(3, "step3.title", "step3.sub")),
-                       value=lambda: ui.step(3, "step3.title", "step3.sub"))
-                    gen_btn = tr(gr.Button(t("gen.btn"), variant="primary", elem_id="gen-btn"),
-                                 value="gen.btn")
-                    with gr.Row():
-                        cancel_btn = tr(gr.Button(t("cancel.btn"), variant="stop", size="sm", min_width=100), value="cancel.btn")
-                        unload_btn = tr(gr.Button(t("unload.btn"), size="sm", min_width=100, elem_classes="ghost-btn"),
-                                        value="unload.btn")
-                    gen_status = gr.HTML(ui.idle_html(), elem_id="gen-status", elem_classes="html-slot")
-                    player = tr(gr.Audio(label=t("player.label"), type="filepath", interactive=False, elem_id="player",
-                                         waveform_options=ui.WAVEFORM), label="player.label")
-                    with gr.Accordion(t("adv.acc"), open=False) as adv_acc:
-                        cot = tr(gr.Dropdown(cot_choices(), value="full", label=t("cot.label")),
-                                 choices=cot_choices, label="cot.label")
-                        max_secs = tr(gr.Slider(30, 600, value=180 if gpu_info.current().low_vram else 300, step=10,
-                                                label=t("max.label")), label="max.label")
-                        with gr.Row():
-                            seed = tr(gr.Number(value=831001, precision=0, label=t("seed.label"), min_width=120),
-                                      label="seed.label")
-                            cfg = tr(gr.Number(value=1.0, label=t("cfg.label"), minimum=0, maximum=20, min_width=120),
-                                     label="cfg.label")
-                        random_seed = tr(gr.Checkbox(value=True, label=t("random.label")), label="random.label")
-                    tr(adv_acc, label="adv.acc")
-
-                with gr.Column(elem_classes="card"):
-                    tr(gr.HTML(ui.step(4, "step4.title", "step4.sub")),
-                       value=lambda: ui.step(4, "step4.title", "step4.sub"))
-                    save_name = tr(gr.Textbox(label=t("savename.label"), placeholder=t("savename.ph")),
-                                   label="savename.label", placeholder="savename.ph")
-                    save_fmt = tr(gr.Radio(["MP3", "FLAC"], value="MP3", label=t("fmt.label"), elem_classes="seg seg-sm"),
-                                  label="fmt.label")
-                    save_dir = tr(gr.Textbox(value=str(path("output_dir")), label=t("savedir.label")),
-                                  label="savedir.label")
-                    overwrite = tr(gr.Checkbox(value=False, label=t("overwrite.label")), label="overwrite.label")
-                    save_btn = tr(gr.Button(t("save.btn"), variant="primary", elem_classes="create-btn"),
-                                  value="save.btn")
-                    save_box = gr.HTML(elem_classes="html-slot")
+          # ================= Reiter Bibliothek =================
+          with gr.Tab(t("tab.library"), id="library") as tab_library:
+            tr(tab_library, label="tab.library")
+            lib_tracks = gr.State([])
+            lib_track = gr.State(None)
+            with gr.Row(equal_height=False, elem_id="lib-row"):
+                with gr.Column(scale=7, min_width=380):
+                    with gr.Column(elem_classes="card"):
+                        tr(gr.HTML(ui.step(5, "lib.title", "lib.sub")), value=lambda: ui.step(5, "lib.title", "lib.sub"))
+                        with gr.Row(equal_height=True, elem_classes="lib-tools"):
+                            lib_query = tr(gr.Textbox(label=t("lib.search"), placeholder=t("lib.search_ph"), max_lines=1,
+                                                      scale=4, min_width=160), label="lib.search", placeholder="lib.search_ph")
+                            lib_order = tr(gr.Dropdown(lib_sort_choices(), value="new", label=t("lib.sort"), scale=2,
+                                                       min_width=140), choices=lib_sort_choices, label="lib.sort")
+                            lib_refresh = tr(gr.Button(t("lib.refresh"), size="sm", scale=1, min_width=110,
+                                                       elem_classes="ghost-btn"), value="lib.refresh")
+                        lib_count = gr.HTML(elem_classes="html-slot")
+                        lib_gallery = tr(gr.Gallery(label=t("lib.gallery"), show_label=False, columns=4, height="auto",
+                                                    object_fit="cover", allow_preview=False, elem_id="lib-gallery"),
+                                         label="lib.gallery")
+                with gr.Column(scale=5, min_width=340):
+                    with gr.Column(elem_classes="card"):
+                        lib_cover = gr.Image(type="filepath", interactive=False, show_label=False, container=False,
+                                             height=300, elem_id="lib-cover", show_download_button=False,
+                                             show_fullscreen_button=True)
+                        lib_head = gr.HTML(f'<div class="lib-pick">{ui.esc(t("lib.pick"))}</div>', elem_classes="html-slot")
+                        lib_player = tr(gr.Audio(label=t("lib.player"), type="filepath", interactive=False,
+                                                 elem_id="lib-player", waveform_options=ui.WAVEFORM), label="lib.player")
+                        with gr.Row(elem_classes="reuse-row"):
+                            reuse_all_btn = tr(gr.Button(t("lib.reuse_all"), variant="primary", size="sm", min_width=150),
+                                               value="lib.reuse_all")
+                        with gr.Row(elem_classes="reuse-row"):
+                            reuse_idea_btn = tr(gr.Button(t("lib.reuse_idea"), size="sm", min_width=80,
+                                                          elem_classes="ghost-btn"), value="lib.reuse_idea")
+                            reuse_style_btn = tr(gr.Button(t("lib.reuse_style"), size="sm", min_width=80,
+                                                           elem_classes="ghost-btn"), value="lib.reuse_style")
+                            reuse_lyrics_btn = tr(gr.Button(t("lib.reuse_lyrics"), size="sm", min_width=80,
+                                                            elem_classes="ghost-btn"), value="lib.reuse_lyrics")
+                        lib_cover_btn = gr.Button(t("cover.btn"), size="sm", interactive=False, elem_classes="ghost-btn")
+                        lib_status = gr.HTML(elem_classes="html-slot")
+                        lib_hint = tr(gr.HTML(), value=lambda: (f'<div class="lyr-hint">{t("lib.reuse_hint")}'
+                                                                + ("" if cover.available() else f"<br>{t('cover.missing')}")
+                                                                + "</div>"))
+                        with gr.Accordion(t("lib.details"), open=False) as lib_acc:
+                            lib_concept = tr(gr.Textbox(label=t("lib.concept"), lines=4, max_lines=8, interactive=False,
+                                                        show_copy_button=True), label="lib.concept")
+                            lib_idea = tr(gr.Textbox(label=t("lib.idea"), lines=3, max_lines=8, interactive=False,
+                                                     show_copy_button=True), label="lib.idea")
+                            lib_style = tr(gr.Textbox(label=t("lib.style"), lines=3, max_lines=6, interactive=False,
+                                                      show_copy_button=True), label="lib.style")
+                            lib_lyrics = tr(gr.Textbox(label=t("lib.lyrics"), lines=12, max_lines=24, interactive=False,
+                                                       show_copy_button=True, elem_id="lib-lyrics"), label="lib.lyrics")
+                        tr(lib_acc, label="lib.details")
 
         # --- Sprache anwenden: alle registrierten Texte plus dynamische Inhalte neu erzeugen
         translated = [component for component, _ in registry]
@@ -671,7 +918,27 @@ def build_ui():
         # ENGINE.cancel() stoppt YuE2 im Hintergrund-Thread, cancels= beendet den UI-Generator.
         cancel_btn.click(cancel, outputs=gen_status, cancels=[gen_event], queue=False)
         unload_btn.click(unload_all, outputs=gen_status)
-        save_btn.click(save, inputs=[result_state, save_name, save_fmt, save_dir, overwrite], outputs=save_box)
+        save_btn.click(save, inputs=[result_state, save_name, save_fmt, save_dir, overwrite, save_cover, model_dd],
+                       outputs=save_box, show_progress="hidden")
+
+        # --- Bibliothek
+        lib_view_out = [lib_gallery, lib_tracks, lib_count]
+        tab_library.select(refresh_library, inputs=[lib_query, lib_order], outputs=lib_view_out, show_progress="hidden")
+        lib_refresh.click(refresh_library, inputs=[lib_query, lib_order], outputs=lib_view_out)
+        lib_query.submit(refresh_library, inputs=[lib_query, lib_order], outputs=lib_view_out)
+        lib_order.change(refresh_library, inputs=[lib_query, lib_order], outputs=lib_view_out, show_progress="hidden")
+        detail_out = [lib_track, lib_cover, lib_head, lib_player, lib_concept, lib_idea, lib_style, lib_lyrics,
+                      lib_cover_btn, lib_status]
+        lib_gallery.select(select_track, inputs=lib_tracks, outputs=detail_out, show_progress="hidden")
+        lib_cover_btn.click(library_cover, inputs=[lib_track, model_dd, lib_query, lib_order],
+                            outputs=[lib_status, lib_gallery, lib_tracks, lib_track, lib_cover, lib_cover_btn, lib_head],
+                            show_progress="hidden")
+        reuse_all_btn.click(reuse_all, inputs=lib_track,
+                            outputs=[tabs, mode, idea, style_wish, abc, lyrics_mode, concept, title, style, lyrics,
+                                     language_state, lint_box, save_name, max_secs, seed, random_seed, cot, gen_status])
+        reuse_idea_btn.click(reuse_idea, inputs=lib_track, outputs=[tabs, mode, idea, concept, gen_status])
+        reuse_style_btn.click(reuse_style, inputs=[lib_track, lyrics], outputs=[tabs, style, lint_box, gen_status])
+        reuse_lyrics_btn.click(reuse_lyrics, inputs=[lib_track, style], outputs=[tabs, lyrics, lint_box, gen_status])
     return demo
 
 
@@ -680,4 +947,4 @@ if __name__ == "__main__":
     # neu initialisieren – das head-Skript hat sie zu diesem Zeitpunkt bereits auf die gewählte Sprache gesetzt.
     gradio_i18n = gr.I18n(de={"app.name": "YuE2 Studio"}, en={"app.name": "YuE2 Studio"})
     build_ui().queue().launch(server_name="127.0.0.1", server_port=CONFIG["server_port"],
-                              inbrowser=True, allowed_paths=[str(TEMP_DIR)], i18n=gradio_i18n)
+                              inbrowser=True, allowed_paths=[str(d) for d in ALLOWED_DIRS], i18n=gradio_i18n)

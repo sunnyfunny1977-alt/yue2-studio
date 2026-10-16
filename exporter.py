@@ -96,6 +96,31 @@ def build_info_text(info, audio_files, seconds):
     return "\n".join(lines) + "\n"
 
 
+def _split_cover(text):
+    """Trennt einen vorhandenen Cover-Abschnitt (in beliebiger Oberflächensprache) vom Rest der Info-Datei."""
+    from i18n import STRINGS
+    heads = set(STRINGS["txt.sec_cover"])
+    lines = text.rstrip("\n").split("\n")
+    for i, line in enumerate(lines):
+        if line.strip() in heads:
+            return "\n".join(lines[:i]).rstrip("\n"), "\n".join(lines[i:])
+    return "\n".join(lines), ""
+
+
+def set_cover_section(text_file, jpg_name, size, model, seed, caption):
+    """Schreibt bzw. ersetzt den Abschnitt „=== Cover ===“ am Ende der Info-TXT."""
+    text_file = Path(text_file)
+    body, _ = _split_cover(text_file.read_text(encoding="utf-8", errors="replace"))
+    section = [t("txt.sec_cover"),
+               _row("txt.cover_file", f"{jpg_name} ({size} × {size})"),
+               _row("txt.cover_model", model),
+               _row("txt.seed", seed),
+               _row("txt.created", f"{datetime.now():%Y-%m-%d %H:%M:%S}"),
+               t("txt.cover_prompt"),
+               caption]
+    text_file.write_text(body + "\n\n" + "\n".join(section) + "\n", encoding="utf-8")
+
+
 def save_song(audio, sr, name, fmt, out_dir, info, overwrite=False):
     """Schreibt <Name>.<mp3|flac> und <Name>.txt. Gibt beide Pfade zurück."""
     if fmt not in FORMATS:
@@ -120,5 +145,8 @@ def save_song(audio, sr, name, fmt, out_dir, info, overwrite=False):
         _write_mp3(audio, sr, audio_file)
     seconds = len(audio) / sr
     audio_files = [out_dir / f"{stem}{ext}" for ext in FORMATS.values() if (out_dir / f"{stem}{ext}").exists()]
-    text_file.write_text(build_info_text(info, audio_files, seconds), encoding="utf-8")
+    # Ein schon erstelltes Cover (z. B. erst MP3 mit Cover, dann zusätzlich FLAC) bleibt in der Info-Datei vermerkt.
+    cover = _split_cover(text_file.read_text(encoding="utf-8", errors="replace"))[1] if text_file.exists() else ""
+    text = build_info_text(info, audio_files, seconds)
+    text_file.write_text(text + ("\n" + cover + "\n" if cover else ""), encoding="utf-8")
     return audio_file, text_file

@@ -264,6 +264,41 @@ footer { display: none !important; }
 @media (max-width: 1250px) { .sysmon { margin-right: 0; width: 100%; } }
 #sysmon-data { display: none !important; }
 
+/* ---------- Reiter Studio | Bibliothek ---------- */
+#main-tabs { margin-top: 4px; }
+#main-tabs > .tab-wrapper, #main-tabs .tab-container { gap: 6px; }
+#main-tabs button[role="tab"] { font-size: 14.5px !important; font-weight: 700 !important; padding: 9px 18px !important;
+  border-radius: 12px 12px 0 0 !important; color: #b9b7da !important; }
+#main-tabs button[role="tab"].selected { color: #fff !important; background: rgba(139,92,246,.18) !important; }
+#main-tabs > div[role="tabpanel"], #main-tabs .tabitem { padding: 14px 0 0 !important; border: none !important;
+  background: transparent !important; }
+
+/* ---------- Bibliothek ---------- */
+#lib-row { gap: 16px !important; align-items: start; }
+@media (min-width: 1100px) {
+  #lib-row { display: grid !important; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); }
+  #lib-row > .column { min-width: 0 !important; width: auto !important; }
+}
+.lib-tools { align-items: flex-end !important; }
+.lib-count { font-size: 12.5px; color: #9b99bd; padding: 0 4px 2px; }
+#lib-gallery { min-height: 420px; }
+#lib-gallery .thumbnail-item, #lib-gallery button.thumbnail-item { border-radius: 14px !important; overflow: hidden; }
+#lib-gallery .caption-label { font-size: 11.5px !important; font-weight: 650 !important; white-space: pre-line !important;
+  line-height: 1.35 !important; overflow: hidden; max-width: 100%; display: -webkit-box; -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical; text-overflow: ellipsis; }
+#lib-gallery .caption-label::first-line { color: #fff; font-weight: 750; }
+#lib-cover { max-width: 300px; margin: 0 auto; }
+#lib-cover img { border-radius: 16px; box-shadow: 0 18px 40px -18px rgba(0,0,0,.9); }
+.lib-head { display: flex; flex-direction: column; gap: 6px; }
+.lib-title { font-size: 20px; font-weight: 800; color: #fff; letter-spacing: -.01em; }
+.lib-files { font-size: 12px; color: #9b99bd; font-family: var(--font-mono); word-break: break-all; }
+.lib-pick { padding: 40px 10px; text-align: center; color: #9b99bd; font-size: 14px; }
+.cover-prog { padding: 12px 14px; border-radius: 14px; background: rgba(0,0,0,.30); border: 1px solid rgba(255,255,255,.08);
+  margin-top: 8px; }
+.cover-prog .prog-head { display: flex; justify-content: space-between; margin-bottom: 8px; gap: 10px; }
+#lib-player { min-height: 150px; }
+.reuse-row button { white-space: nowrap; }
+
 /* ---------- Song-Info (Remake) ---------- */
 .track { display: flex; gap: 16px; align-items: center; padding: 14px; border-radius: 18px;
   background: linear-gradient(135deg, rgba(124,58,237,.14), rgba(6,182,212,.07));
@@ -329,8 +364,9 @@ def sysmon_html():
     return f'<div class="sysmon">{rows}</div>'
 
 
-def hero(ollama_ok, ollama_text, gpu_text, gpu_ok=True, low_vram=False):
+def hero(ollama_ok, ollama_text, gpu_text, gpu_ok=True, low_vram=False, cover_text="", cover_ok=False):
     lowvram_chip = chip(t("chip.lowvram"), "warn") if low_vram else ""
+    cover_chip = chip(cover_text, "ok" if cover_ok else "") if cover_text else ""
     return f"""
 <div class="hero">
   <div class="hero-left">
@@ -342,10 +378,34 @@ def hero(ollama_ok, ollama_text, gpu_text, gpu_ok=True, low_vram=False):
         {chip(gpu_text, "ok" if gpu_ok else "warn")}
         {lowvram_chip}
         {chip(t("chip.yue"), "accent")}
+        {cover_chip}
       </div></div>
   </div>
   {sysmon_html()}
 </div>"""
+
+
+def track_head(track):
+    """Kopf der Detailkarte in der Bibliothek: Titel und Chips (Länge, Modus, Sprache, BPM, Datum, Cover)."""
+    info = track.info
+    chips = []
+    if track.seconds:
+        chips.append(chip(f"⏱ {fmt_duration(track.seconds)} min"))
+    chips.append(chip(t("lib.chip_remake") if info.get("mode") == "remake" else t("lib.chip_new"), "accent"))
+    if info.get("language"):
+        chips.append(chip(f"🌐 {info['language']}"))
+    if track.genre():
+        chips.append(chip(f"🎸 {track.genre()}"))
+    if track.bpm():
+        chips.append(chip(f"🥁 {track.bpm()} BPM"))
+    if track.created.year > 1900:
+        chips.append(chip(f"📅 {track.created:%d.%m.%Y %H:%M}"))
+    if track.jpg:
+        chips.append(chip(t("lib.chip_cover"), "ok"))
+    files = " · ".join(f"{ext[1:].upper()}" for ext in sorted(track.audio))
+    return (f'<div class="lib-head"><div class="lib-title">{esc(track.title)}</div>'
+            f'<div class="lib-files">{esc(files)} · {esc(str(track.folder))}</div>'
+            f'<div class="chips">{"".join(chips)}</div></div>')
 
 
 def step(num, title_key, sub_key=""):

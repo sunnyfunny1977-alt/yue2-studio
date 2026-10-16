@@ -15,5 +15,12 @@
   "sheetsage_python": ".venv-sheetsage2/Scripts/python.exe",
   "sheetsage_model": "models/SheetSage2",
   "output_dir": "songs",
+  "flux_python": ".venv-flux3/Scripts/python.exe",
+  "flux_model_dir": "models/flux3-klein",
+  "flux_repo": "unsloth/flux-3-image-klein",
+  "flux_variant": "auto",
+  "cover_steps": 16,
+  "cover_render_size": 1024,
+  "cover_size": 512,
   "server_port": 7860
 }

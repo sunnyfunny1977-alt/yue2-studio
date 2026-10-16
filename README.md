@@ -11,6 +11,10 @@ Quellen: [YuE2 Prompt-Guide (ComfyUI)](https://docs.comfy.org/tutorials/audio/yu
 
 <p align="center"><img src="docs/vorschau.png" alt="YuE2 Studio – Oberfläche mit Idee, Feinschliff, Generieren und Speichern" width="900"></p>
 
+**Bibliothek / Library** – gespeicherte Songs mit FLUX.3-Covern, Details und Wiederverwenden:
+
+<p align="center"><img src="docs/vorschau2.png" alt="YuE2 Studio – Bibliothek mit Song-Kacheln, Covern und Detailkarte" width="900"></p>
+
 ## Beispiel / Example
 
 Ein mit der App erzeugter Song (Modus *Neuer Song*, Ollama `qwen3.8:27b`, YuE2 `cot=full`, 56 s, Rechenzeit 40 s auf einer RTX 5090):
@@ -78,6 +82,31 @@ Die Oberfläche gibt es auf **Deutsch** und **Englisch**.
 4. **Speichern:** Dateiname (= Songname), MP3 (320 kbit/s) oder FLAC (24 Bit) und Zielordner wählen. Dabei entstehen zwei Dateien:
    - `<Name>.mp3` bzw. `<Name>.flac`
    - `<Name>.txt` mit Titel, Datum, Modus, Idee, Style, Lyrics, Songlänge, Seed, Einstellungen, Modellen und beim Remake zusätzlich Quelldatei, Transkript und Melodie-ABC
+   - optional `<Name>.jpg`: Mit **„🎨 Cover mit FLUX.3 erzeugen“** entsteht direkt nach dem Speichern ein Cover (siehe unten).
+
+## Bibliothek
+Der Reiter **„📚 Bibliothek“** zeigt alle gespeicherten Songs als Kacheln: Cover (oder ein Platzhalter mit dem Titel), darunter Titel, Länge, Genre und Tempo. Erfasst werden der Standard-Ausgabeordner und jeder Ordner, in den du schon gespeichert hast. Suche (Titel, Style, Lyrics) und Sortierung (neueste, Titel, Länge) helfen beim Finden.
+
+Ein Klick auf eine Kachel öffnet rechts die Detailkarte mit großem Cover, Infos (Länge, Modus, Sprache, Genre, BPM, Datum) und Player. Unter **„Details“** stehen Songkonzept, Idee, Style und Lyrics zum Lesen und Kopieren. Alle Infos stammen aus der Info-TXT des Songs (egal ob auf Deutsch oder Englisch gespeichert).
+
+Wiederverwenden per Knopfdruck – die Werte landen im Studio, und die App wechselt dorthin:
+- **„♻️ Alles übernehmen“**: Titel, Konzept, Idee, Sprache, Style, Lyrics, Seed und Planungsmodus. Bei Remakes zusätzlich die Original-Melodie (ABC) und der Stilwunsch – das Remake lässt sich so ohne Originaldatei erneut generieren.
+- **„💡 Idee“**, **„🎨 Style“**, **„📝 Lyrics“**: nur der jeweilige Teil.
+
+## Cover (optional, FLUX.3 Image Klein)
+Auf Wunsch malt [FLUX.3 Image Klein](https://huggingface.co/black-forest-labs/flux-3-image-klein) ein Albumcover (512 × 512) mit dem **Songtitel als Schriftzug im Bild**. Ollama schreibt dafür aus Titel, Style, Songkonzept und Lyrics eine ausführliche Bildbeschreibung – mit dem offiziellen Prompt-Upsampler-Systemprompt von Black Forest Labs (`prompts/flux3_upsampler_t2i.md`). Das Cover wird als `<Name>.jpg` gespeichert, **in MP3 und FLAC eingebettet** (Audiodaten bleiben unverändert) und in der Info-TXT vermerkt. Erstellen lässt es sich beim Speichern (Checkbox) oder später in der Bibliothek (**„🎨 Cover erstellen“**, auch erneut mit neuem Motiv).
+
+FLUX.3 läuft komplett innerhalb von YuE2 Studio – in einer eigenen Umgebung `.venv-flux3` (diffusers), ohne ComfyUI. Die Funktion ist **optional** und wird separat installiert:
+```powershell
+powershell -ExecutionPolicy Bypass -File install_cover.ps1
+```
+- Download: ca. **15,5 GB** (fp8-Variante, Standard) aus `unsloth/flux-3-image-klein` (Spiegel des offiziellen Repos, ohne Login). `-Variant bf16` lädt den größeren bf16-Transformer (ca. 20 GB gesamt).
+- RTX 5090: ein Cover dauert etwa 35 s (davon ~20 s für die Bildbeschreibung durch Ollama), VRAM-Spitze ca. 17 GB. Danach gibt FLUX den Grafikspeicher sofort wieder frei, das Modell bleibt für weitere Cover im Arbeitsspeicher; **„🧹 VRAM freigeben“** beendet es ganz.
+- Karten unter 22 GB VRAM nutzen automatisch CPU-Offload (langsamer, nicht getestet). AMD/ROCm: experimentell, nicht auf echter Hardware getestet.
+- Ohne Installation sind die Cover-Knöpfe ausgegraut; alles andere funktioniert wie gewohnt.
+- Lizenz des Modells: **FLUX Kommunity License** – kostenlos für private Nutzung und kleine Unternehmen, Details auf der Modellseite.
+
+> **English:** The new **Library** tab shows all saved songs as tiles (cover, title, length, genre, BPM) with search and sorting. Clicking a tile opens a detail card with player and – under *Details* – concept, idea, style and lyrics, read from the song's info TXT. **Reuse** buttons copy everything (incl. seed and, for remakes, the original melody) or just idea, style or lyrics back into the studio. Optionally, **FLUX.3 Image Klein** creates a 512 × 512 album cover with the song title rendered into the artwork; Ollama writes the image prompt using BFL's official upsampler system prompt. The cover is saved as `<Name>.jpg`, embedded into MP3/FLAC and noted in the info TXT. FLUX runs fully inside YuE2 Studio (own environment, no ComfyUI) and is installed separately with `install_cover.ps1` (~15.5 GB download from `unsloth/flux-3-image-klein`, FLUX Kommunity License).
 
 ## Masterprompts
 Die Prompts liegen in `prompts/` und lassen sich anpassen:
@@ -101,6 +130,9 @@ Kernregeln nach dem YuE2-Guide: Der **Style** ist eine kommagetrennte Liste in d
 |---|---|
 | `ollama_default_model` | vorausgewähltes Ollama-Modell |
 | `ollama_think` | Denkmodus beim Start an (`true`) oder aus (`false`) |
+| `flux_model_dir`, `flux_python` | Ort des FLUX.3-Modells und der FLUX-Umgebung (legt `install_cover.ps1` an) |
+| `flux_variant` | `auto` (vorhandene Variante, fp8 bevorzugt), `fp8r` oder `bf16` |
+| `cover_steps`, `cover_render_size`, `cover_size` | Schritte (16), Render-Größe (1024) und Endgröße des Covers (512) |
 | `yue2_backend` | `auto` (NVIDIA: `torch` mit CUDA-Graphs, AMD: `torch-eager`), `torch` oder `torch-eager` |
 | `yue2_attention` | `auto` (NVIDIA/Windows: cuDNN, da PyTorch für Windows ohne Flash-Attention gebaut ist; AMD: `sdpa`), `cudnn`, `sdpa` oder `flash` |
 | `yue2_synth_attention` | Attention-Kern der Audio-Synthese: `auto` (NVIDIA: cuDNN, AMD: `sdpa` – spart bei einem 4-Minuten-Song rund 12 GB VRAM und ist mehrfach schneller), `cudnn`, `efficient`, `sdpa` oder `original` (YuE2-Standard) |
@@ -135,4 +167,4 @@ Die App läuft auch auf AMD-Grafikkarten. Grundlage ist AMDs offizielles PyTorch
 
 ## Lizenz
 Der Code dieser App steht unter der [Apache-2.0-Lizenz](LICENSE). Copyright 2026 sunnyfunny1977-alt.
-Die Modelle (YuE2, SheetSage2, MERT, Whisper) und Bibliotheken werden von `install.ps1` aus ihren Original-Quellen geladen und unterliegen ihren eigenen Lizenzen.
+Die Modelle (YuE2, SheetSage2, MERT, Whisper) und Bibliotheken werden von `install.ps1` aus ihren Original-Quellen geladen und unterliegen ihren eigenen Lizenzen. Das optionale Bildmodell FLUX.3 Image Klein (`install_cover.ps1`) steht unter der FLUX Kommunity License von Black Forest Labs; `prompts/flux3_upsampler_t2i.md` ist der unveränderte Upsampler-Systemprompt aus `black-forest-labs/flux-3-image-klein-pup` (Apache-2.0).
