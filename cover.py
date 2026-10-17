@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 import gpu_info
@@ -145,9 +146,15 @@ def cover_request(title, style, concept, lyrics):
         "illustration, painting, graphic design or photography). The artwork fills the whole square canvas: "
         "no border, no frame, no vinyl or CD mockup, no hands holding it.\n"
         f"Render exactly one piece of text: the song title \"{title}\" as large, clearly legible typography that "
-        "belongs to the design; describe its font style, color and placement. Write the title exactly as given, "
-        "letter by letter. No other words, letters, numbers, artist names, logos, labels or watermarks anywhere."
+        "belongs to the design, placed in the upper third of the cover (players and libraries overlay the lower "
+        "edge); describe its font style and color. Write the title exactly as given, letter by letter. No other "
+        "words, letters, numbers, artist names, logos, labels or watermarks anywhere."
     )
+
+
+def _title_sentence(title):
+    return (f" Across the upper third of the cover, the title \"{title}\" is written in large, bold, clearly legible "
+            "letters that contrast strongly with the background.")
 
 
 def cover_caption(model, title, style, concept, lyrics):
@@ -157,6 +164,9 @@ def cover_caption(model, title, style, concept, lyrics):
     caption = caption.strip().strip('"').strip()
     if not caption:
         raise RuntimeError(t("cover.no_caption"))
+    # Das Sprachmodell lässt den Schriftzug gelegentlich weg – ohne Titel in Anführungszeichen malt FLUX keinen.
+    if f'"{title}"'.lower() not in caption.lower():
+        caption += _title_sentence(title)
     return caption
 
 
@@ -179,7 +189,16 @@ def _embed(audio, cover_jpg, title):
     if proc.returncode != 0 or not tmp.exists():
         tmp.unlink(missing_ok=True)
         raise RuntimeError(t("cover.embed_failed", file=audio.name, e=proc.stderr.decode(errors="replace")[-400:]))
-    os.replace(tmp, audio)
+    # Virenscanner, Windows-Suche oder ein Player halten frische Dateien manchmal kurz fest – kurz erneut versuchen.
+    for attempt in range(20):
+        try:
+            os.replace(tmp, audio)
+            return
+        except PermissionError:
+            if attempt == 19:
+                tmp.unlink(missing_ok=True)
+                raise
+            time.sleep(0.5)
 
 
 def embed_existing(audio_file, title=""):
